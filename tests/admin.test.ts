@@ -48,8 +48,8 @@ describe('management snapshot and write minimization', () => {
     const response = await call('/snapshot');
     expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect(await response.json()).toEqual({
-      config: { proxyUrl: origin, activeUpstreamId: 'a', cacheTtlSeconds: 30, upstreamCooldownSeconds: 180, version: 7 },
-      upstreams: ['a', 'b'].map(id => ({ id, name: id, baseUrl: `https://${id}.example/`, authType: 'bearer', hasKey: true })),
+      config: { proxyUrl: origin, activeUpstreamId: 'a', cacheTtlSeconds: 30, upstreamCooldownSeconds: 1800, version: 7 },
+      upstreams: ['a', 'b'].map(id => ({ id, name: id, baseUrl: `https://${id}.example/`, authType: 'bearer', hasKey: true, healthRevision: 0, faultUntil: 0, faultReason: null })),
       keys: [{ id: 'k', name: 'Key', keyPrefix: 'relay_prefix', createdAt: '2026-10-15', upstreamIds: ['a', 'b'], canReveal: true }]
     });
     expect(read).toHaveBeenCalledTimes(1);
@@ -97,6 +97,19 @@ describe('management snapshot and write minimization', () => {
     expect(write).toHaveBeenCalledTimes(1);
     expect(row.config_json).not.toContain('replacement-secret');
     expect(JSON.parse(row.config_json).upstreams[0].keyCiphertext).not.toBe('private-upstream-ciphertext');
+    expect(JSON.parse(row.config_json).upstreams[0]).toMatchObject({healthRevision: 1, faultUntil: 0, faultReason: null});
+  });
+
+  it('preserves health on name and route edits, and fences it on destination or auth edits', async () => {
+    const config = fixture(); Object.assign(config.upstreams[0], {healthRevision: 5, faultUntil: 9999999999999, faultReason: 'HTTP 503'});
+    const {call, row} = setup(config);
+    await call('/upstreams/a', 'PATCH', {name: 'renamed'});
+    await call('/keys/k', 'PATCH', {upstreamIds: ['b','a']});
+    expect(JSON.parse(row.config_json).upstreams[0]).toMatchObject({healthRevision: 5, faultUntil: 9999999999999});
+    await call('/upstreams/a', 'PATCH', {baseUrl: 'https://changed.example/'});
+    expect(JSON.parse(row.config_json).upstreams[0]).toMatchObject({healthRevision: 6, faultUntil: 0, faultReason: null});
+    await call('/upstreams/a', 'PATCH', {authType: 'x-api-key'});
+    expect(JSON.parse(row.config_json).upstreams[0].healthRevision).toBe(7);
   });
 
   it('compares against fresh D1 state even when the proxy cache already matches the request', async () => {

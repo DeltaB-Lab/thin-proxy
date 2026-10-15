@@ -13,8 +13,27 @@ beforeEach(() => {
   state = snapshot(1, {activeUpstreamId:'a',upstreams:structuredClone(upstreams),accessKeys:[]});
 });
 describe('cooldown state machine', () => {
-  it('defaults to three minutes and validates configurable seconds', () => {
-    expect(upstreamCooldownSeconds({} as Env)).toBe(180);
+  it('does not extend a local deadline for a second failure from the same generation', () => {
+    const a = select(['a']); const b = select(['a']);
+    expect(a.finish('failed')).toBe(true);
+    now += 30_000;
+    expect(b.finish('failed')).toBe(false);
+    expect(() => select(['a'])).toThrow(expect.objectContaining({headers:{'Retry-After':'150'}}));
+  });
+  it('reconciles persisted revisions and fences in-flight results after a manual clear', () => {
+    const old = select(['a']);
+    const clear = structuredClone(state); clear.version++;
+    clear.config.upstreams[0].healthRevision = 1;
+    health.sync(clear);
+    expect(old.finish('failed')).toBe(false);
+    const fresh = select(['a'], clear); expect(fresh.finish('failed')).toBe(true);
+    const clearedAgain = structuredClone(clear); clearedAgain.version++;
+    clearedAgain.config.upstreams[0].healthRevision = 2;
+    health.sync(clearedAgain);
+    expect(select(['a'], clearedAgain).upstream.id).toBe('a');
+  });
+  it('defaults to thirty minutes and validates configurable seconds', () => {
+    expect(upstreamCooldownSeconds({} as Env)).toBe(1800);
     for (const value of ['1','300','86400']) expect(upstreamCooldownSeconds({UPSTREAM_COOLDOWN_SECONDS:value} as Env)).toBe(Number(value));
     for (const value of ['0','-1','1.5','NaN','Infinity','','86401']) expect(() => upstreamCooldownSeconds({UPSTREAM_COOLDOWN_SECONDS:value} as Env)).toThrow();
   });
@@ -71,7 +90,8 @@ describe('cooldown state machine', () => {
     select(['a']).finish('failed'); lateSuccess.finish('healthy');
     expect(() => select(['a'])).toThrow(expect.objectContaining({status:503}));
     now += 180_000; const probe = select(['a']);
-    lateFailure.finish('failed'); probe.finish('healthy');
+    expect(lateFailure.finish('failed')).toBe(false);
+    probe.finish('failed');
     expect(() => select(['a'])).toThrow(expect.objectContaining({status:503}));
     now += 180_000; select(['a']).finish('healthy'); expect(select(['a']).upstream.id).toBe('a');
   });

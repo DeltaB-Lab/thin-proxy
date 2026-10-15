@@ -1,4 +1,4 @@
-interface Upstream { id: string; name: string; baseUrl: string; authType: string }
+interface Upstream { id: string; name: string; baseUrl: string; authType: string; faultUntil: number; faultReason: string | null }
 interface KeyInfo { id: string; name: string; keyPrefix: string; createdAt: string; upstreamIds: string[] | null; canReveal: boolean }
 interface Settings { proxyUrl: string; activeUpstreamId: string | null; cacheTtlSeconds: number; upstreamCooldownSeconds: number }
 interface ManagementSnapshot { config: Settings; upstreams: Upstream[]; keys: KeyInfo[] }
@@ -122,7 +122,8 @@ async function refresh() {
   $('proxy-url').textContent = settings.proxyUrl;
   $('current-upstream').textContent = list.find(u => u.id === settings.activeUpstreamId)?.name ?? '未选择';
   $('ttl-note').textContent = String(settings.cacheTtlSeconds);
-  $('cooldown-note').textContent = String(settings.upstreamCooldownSeconds);
+  $('cooldown-note').textContent = settings.upstreamCooldownSeconds % 60 === 0
+    ? `${settings.upstreamCooldownSeconds / 60} 分钟` : `${settings.upstreamCooldownSeconds} 秒`;
   const cards = $('upstream-list'); cards.replaceChildren();
   if (!list.length) cards.append(node('div', '暂无上游', 'empty'));
   for (const u of list) {
@@ -130,7 +131,16 @@ async function refresh() {
     const card = node('article', undefined, `upstream-card${active ? ' active' : ''}`);
     const heading = node('div', undefined, 'card-title'); heading.append(node('h3', u.name)); if (active) heading.append(node('span', '默认上游', 'badge'));
     card.append(heading, node('p', u.baseUrl, 'muted'), node('span', u.authType === 'bearer' ? 'Authorization: Bearer' : 'x-api-key', 'tag'));
+    const cooling = u.faultUntil > Date.now();
+    const reason = u.faultReason === 'timeout' ? '响应超时' : u.faultReason === 'connection' ? '连接失败' : u.faultReason ?? '上游故障';
+    card.append(node('p', cooling
+      ? `冷却中 · ${reason} · ${new Date(u.faultUntil).toLocaleString()} 后可重试`
+      : u.faultUntil ? '冷却已到期，可重新尝试' : '未标记故障', 'hint'));
     const actions = node('div', undefined, 'actions');
+    actions.append(button('清除故障状态', 'quiet small', () => void action(async () => {
+      await api(`/upstreams/${u.id}/clear-fault`, 'POST'); await refresh();
+      notify(`已允许重新尝试，其他实例约 ${settings.cacheTtlSeconds} 秒内同步。`);
+    })));
     actions.append(button(active ? '取消默认' : '设为默认', active ? 'quiet small' : 'small', () => void action(async () => {
       if (active && !confirm('取消后，跟随默认上游的 Key 将无法回源。已指定上游的 Key 不受影响。确定取消？')) return;
       await api('/active-upstream', 'PUT', { id: active ? null : u.id }); await refresh(); saved();

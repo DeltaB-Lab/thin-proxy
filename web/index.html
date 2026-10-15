@@ -34,7 +34,7 @@
       <div class="content">
         <section id="upstreams-section" class="section"><div class="section-heading"><h2>上游 <span id="upstream-count" class="count">0</span></h2><button id="add-upstream">＋ 添加上游</button></div><div id="upstream-list" class="upstream-grid"></div></section>
         <section id="keys-section" class="section"><div class="section-heading"><h2>API KEYS <span id="key-count" class="count">0</span></h2><button id="add-key" class="secondary">＋ 创建 Key</button></div><div id="key-list" class="key-list"></div></section>
-        <details id="usage" class="usage"><summary>接入方式</summary><div class="usage-content"><p>Base URL 使用代理地址，API Key 使用这里创建的 Key。</p><p>客户端要求 /v1 时，将它加在代理地址后。每个 Key 可配置多个上游并排序，排在前面的优先，跳过冷却中的上游；每次请求只访问一项；也可跟随默认上游。切换上游、修改绑定和撤销 Key 可能延迟 <span id="ttl-note">30</span> 秒生效。</p><p>网络错误、超时、401 / 403 / 408 / 429 和 5xx 会让该上游冷却 <span id="cooldown-note">180</span> 秒。本次错误直接返回，由客户端决定是否重试；全部不可用时返回 503 和 Retry-After。冷却到期允许一次请求探测，成功恢复，失败重新冷却。请求体直接流式转发，不缓存、不重发；大小受 Cloudflare 和上游限制。冷却状态只在当前实例内有效，重启后清空。</p></div></details>
+        <details id="usage" class="usage"><summary>接入方式</summary><div class="usage-content"><p>Base URL 使用代理地址，API Key 使用这里创建的 Key。</p><p>客户端要求 /v1 时，将它加在代理地址后。每个 Key 可配置多个上游并排序，排在前面的优先，跳过冷却中的上游；每次请求只访问一项；也可跟随默认上游。切换上游、修改绑定和撤销 Key 可能延迟 <span id="ttl-note">30</span> 秒生效。</p><p>网络错误、超时、401 / 403 / 408 / 429 和 5xx 会让该上游冷却 <span id="cooldown-note">30 分钟</span>。本次错误直接返回，由客户端决定是否重试；全部不可用时返回 503 和 Retry-After。冷却到期后，每个实例允许一次请求探测；失败开启下一轮冷却。可在上游卡片手动清除故障状态，允许重新尝试。请求体直接流式转发，不缓存、不重发；大小受 Cloudflare 和上游限制。故障状态保存在 D1，其他实例随配置缓存刷新同步，正常请求不额外查询数据库。</p></div></details>
       </div>
     </div>
   </main>

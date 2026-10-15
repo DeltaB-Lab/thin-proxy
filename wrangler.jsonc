@@ -21,7 +21,7 @@
   }],
   "vars": {
     "CONFIG_CACHE_TTL_SECONDS": "30",
-    "UPSTREAM_COOLDOWN_SECONDS": "180",
+    "UPSTREAM_COOLDOWN_SECONDS": "1800",
     "SELF_HOSTS": "llm-api.drt3b.com,thin-proxy.skpm.workers.dev"
   },
   "observability": {

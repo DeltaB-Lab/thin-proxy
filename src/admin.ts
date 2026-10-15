@@ -4,13 +4,14 @@ import { getCache } from './cache';
 import { decryptAccessKey, decryptKey, encryptAccessKey, encryptKey, hash, randomAccessKey, sameSecret } from './crypto';
 import { HttpError, json } from './errors';
 import { keyUpstreamIds } from './key-routing';
-import { readConfig, writeConfig } from './storage';
-import { upstreamCooldownSeconds } from './upstream-health';
+import { clearUpstreamFault, readConfig, writeConfig } from './storage';
+import { getUpstreamHealth, upstreamCooldownSeconds } from './upstream-health';
 import { authType, baseUrl, field, invalid, managementBody, upstreamKey } from './validation';
 import type { AccessKey, Config, Env, Snapshot } from './types';
 
 const notFound = () => new HttpError(404, 'NOT_FOUND', '记录或接口不存在');
-const publicUpstream = (u: Config['upstreams'][number]) => ({ id: u.id, name: u.name, baseUrl: u.baseUrl, authType: u.authType, hasKey: true });
+const publicUpstream = (u: Config['upstreams'][number]) => ({ id: u.id, name: u.name, baseUrl: u.baseUrl, authType: u.authType, hasKey: true,
+  healthRevision: u.healthRevision ?? 0, faultUntil: u.faultUntil ?? 0, faultReason: u.faultReason ?? null });
 const publicKey = (key: AccessKey) => ({
   id: key.id, name: key.name, keyPrefix: key.keyPrefix, createdAt: key.createdAt,
   upstreamIds: keyUpstreamIds(key), canReveal: !!key.encryptedKey
@@ -37,7 +38,7 @@ async function commit(env: Env, before: Snapshot, config: Config): Promise<void>
   if (JSON.stringify(before.config) === JSON.stringify(config)) return;
   const started = Date.now();
   const next = await writeConfig(env, before.version, config);
-  getCache(env).publish(next, started);
+  getUpstreamHealth(env).sync(getCache(env).publish(next, started));
 }
 export async function admin(request: Request, env: Env): Promise<Response> {
   const path = new URL(request.url).pathname.slice('/_relay/api'.length);
@@ -100,6 +101,14 @@ export async function admin(request: Request, env: Env): Promise<Response> {
     return json({ key });
   }
   const upstreamMatch = /^\/upstreams\/([^/]+)$/.exec(path);
+  const clearMatch = /^\/upstreams\/([^/]+)\/clear-fault$/.exec(path);
+  if (clearMatch && method === 'POST') {
+    const started = Date.now();
+    const next = await clearUpstreamFault(env, clearMatch[1]);
+    if (!next) throw notFound();
+    getUpstreamHealth(env).sync(getCache(env).publish(next, started));
+    return json(publicUpstream(next.config.upstreams.find(u => u.id === clearMatch[1])!));
+  }
   const keyMatch = /^\/keys\/([^/]+)$/.exec(path);
   const known = (path === '/upstreams' && method === 'POST') ||
     (upstreamMatch && (method === 'PATCH' || method === 'DELETE')) ||
@@ -127,10 +136,16 @@ export async function admin(request: Request, env: Env): Promise<Response> {
       if (config.accessKeys.some(k => keyUpstreamIds(k)?.includes(u.id))) throw new HttpError(409, 'UPSTREAM_IN_USE', '先从转发 Key 的上游列表中移除此上游再删除');
       config.upstreams = config.upstreams.filter(item => item.id !== u.id);
     } else {
+      const old = JSON.stringify([u.baseUrl, u.authType, u.keyVersion, u.keyIv, u.keyCiphertext]);
       if (body.name !== undefined) u.name = field(body.name, '名称');
       if (body.baseUrl !== undefined) u.baseUrl = baseUrl(body.baseUrl, request, env);
       if (body.authType !== undefined) u.authType = authType(body.authType);
       if (body.key !== undefined && body.key !== '') Object.assign(u, await encryptKey(env, u.id, upstreamKey(body.key)));
+      if (old !== JSON.stringify([u.baseUrl, u.authType, u.keyVersion, u.keyIv, u.keyCiphertext])) {
+        u.healthRevision = (u.healthRevision ?? 0) + 1;
+        u.faultUntil = 0;
+        u.faultReason = null;
+      }
       result = publicUpstream(u);
     }
   } else if (path === '/active-upstream') {
