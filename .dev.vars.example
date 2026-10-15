@@ -1,4 +1,0 @@
-# Copy to .dev.vars for LOCAL development. Generate your own values.
-ADMIN_KEY=replace-with-a-random-secret-at-least-32-characters
-# Base64 encoding of exactly 32 random bytes, independent from ADMIN_KEY.
-UPSTREAM_KEY_ENCRYPTION_KEY=replace-with-base64-32-byte-key
