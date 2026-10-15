@@ -22,5 +22,9 @@
     "CONFIG_CACHE_TTL_SECONDS": "30",
     "SELF_HOSTS": "relay.example.com,thin-proxy.your-subdomain.workers.dev"
   },
-  "observability": { "enabled": false }
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": true, "persist": true }
+  }
 }
