@@ -19,6 +19,9 @@ export interface Upstream extends EncryptedKey {
   name: string;
   baseUrl: string;
   authType: AuthType;
+  healthRevision?: number;
+  faultUntil?: number;
+  faultReason?: string | null;
 }
 export interface AccessKey {
   id: string;

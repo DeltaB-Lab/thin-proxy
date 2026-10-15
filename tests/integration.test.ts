@@ -61,6 +61,10 @@ async function value(response: Awaited<ReturnType<typeof admin>>) {
 async function proxy(path: string, key = keyA, options: Record<string, any> = {}) {
   return mf.dispatchFetch(`${origin}${path}`, { redirect: 'manual', ...options, headers: { Authorization: `Bearer ${key}`, ...options.headers } });
 }
+async function waitForFault(id: string) {
+  // Fault persistence uses waitUntil and can finish after the client sees the error.
+  await expect.poll(async () => (await value(await admin('/upstreams'))).find((u:any) => u.id === id).faultUntil).toBeGreaterThan(Date.now());
+}
 beforeAll(async () => {
   const bundled = await build({ entryPoints: ['src/index.ts'], bundle: true, write: false, format: 'esm', target: 'es2022' });
   mf = new Miniflare({
@@ -86,7 +90,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     const response = await admin('/session', 'POST', { key: adminKey }, false);
     expect(response.status).toBe(200); cookie = response.headers.get('set-cookie')!.split(';')[0];
     expect(response.headers.get('set-cookie')).toContain('HttpOnly');
-    expect((await value(await admin('/config'))).upstreamCooldownSeconds).toBe(180);
+    expect((await value(await admin('/config'))).upstreamCooldownSeconds).toBe(1800);
     expect((await proxy('/v1/messages', adminKey)).status).toBe(401);
   });
   it('creates independent forwarding keys without exposing hashes in listings', async () => {
@@ -169,6 +173,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     const redirect = await proxy('/redirect'); expect(redirect.status).toBe(307); expect(await redirect.text()).toBe('keep redirect');
     const error = await proxy('/error'); expect(error.status).toBe(429); expect(error.headers.get('x-custom')).toBe('preserved');
     expect(await error.text()).toBe(' {"error":{"nested":[1,2]}} ');
+    await waitForFault(upstreamA);
     // Updating credentials resets health for the shared fixture.
     await value(await admin(`/upstreams/${upstreamA}`, 'PATCH', {key:'upstream-secret-A'}));
   });
@@ -206,6 +211,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
       req.on('error', reject); req.end();
     });
     expect(failed.status).toBe(403); expect(failed.body).toBe('handshake refused');
+    await waitForFault(upstreamB);
     await value(await admin(`/upstreams/${upstreamB}`, 'PATCH', {key:'upstream-secret-B'}));
   });
   it('routes bound keys independently with the correct URL and credentials, even without a default', async () => {
@@ -311,6 +317,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     ws.webSocket!.close(1000, 'done'); await closed;
     const last = await proxy('/echo?fail=a.example&fail=b.example', record.key);
     expect(last.status).toBe(503); expect(await last.text()).toBe('failed at b.example');
+    await waitForFault(upstreamB);
     await value(await admin(`/keys/${record.id}`, 'PATCH', {upstreamIds:[upstreamB,upstreamA]}));
     const cooling = await proxy('/echo', record.key);
     expect(cooling.status).toBe(503); expect(Number(cooling.headers.get('Retry-After'))).toBeGreaterThan(0);
@@ -398,6 +405,29 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     await db.prepare('ALTER TABLE config RENAME TO config_offline').run();
     try { expect((await proxy('/cached', keyB)).status).toBe(200); }
     finally { await db.prepare('ALTER TABLE config_offline RENAME TO config').run(); }
+  });
+  it('persists faults and lets only same-origin admins clear them, including already clear states', async () => {
+    const path = `/upstreams/${upstreamB}/clear-fault`;
+    expect((await admin(path, 'POST', undefined, false)).status).toBe(401);
+    expect((await mf.dispatchFetch(origin + '/_relay/api' + path, {
+      method: 'POST', headers: {Cookie: cookie, Origin: 'https://evil.example'}
+    })).status).toBe(403);
+    expect((await admin(path)).status).toBe(404);
+    expect((await admin('/upstreams/missing/clear-fault', 'POST')).status).toBe(404);
+    const failed = await proxy('/echo?fail=b.example', keyB);
+    expect(failed.status).toBe(503); expect(await failed.text()).toBe('failed at b.example');
+    const findB = async () => (await value(await admin('/upstreams'))).find((u:any) => u.id === upstreamB);
+    await expect.poll(async () => (await findB()).faultUntil).toBeGreaterThan(Date.now());
+    const marked = await findB();
+    expect(marked.faultUntil - Date.now()).toBeGreaterThan(1_798_000);
+    expect(marked.faultReason).toBe('HTTP 503');
+    expect((await proxy('/echo', keyB)).status).toBe(503);
+    const cleared = await value(await admin(path, 'POST'));
+    expect(cleared).toMatchObject({healthRevision: marked.healthRevision + 1, faultUntil: 0, faultReason: null});
+    expect((await proxy('/echo', keyB)).status).toBe(200);
+    const before = await value(await admin('/config'));
+    expect((await value(await admin(path, 'POST'))).healthRevision).toBe(cleared.healthRevision + 1);
+    expect((await value(await admin('/config'))).version).toBe(before.version + 1);
   });
   it('optimistic SQL updates reject old versions and logout clears the cookie', async () => {
     const db = await mf.getD1Database('DB', 'relay');

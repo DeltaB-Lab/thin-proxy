@@ -4,7 +4,7 @@ import { proxy } from './proxy';
 import type { Env } from './types';
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
     try {
       const path = new URL(request.url).pathname;
       if (path === '/_relay') return Response.redirect(`${new URL(request.url).origin}/_relay/`, 308);
@@ -20,7 +20,7 @@ export default {
         response.headers.set('Cache-Control', 'no-store');
         return response;
       }
-      return await proxy(request, env);
+      return await proxy(request, env, context);
     } catch (error) { return errorResponse(error); }
   }
 } satisfies ExportedHandler<Env>;

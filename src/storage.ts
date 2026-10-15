@@ -3,6 +3,9 @@ import { keyUpstreamIds } from './key-routing';
 import type { Config, Env, Snapshot } from './types';
 export function snapshot(version: number, config: Config): Snapshot {
   if (!Number.isInteger(version) || !Array.isArray(config.upstreams) || !Array.isArray(config.accessKeys) ||
+    config.upstreams.some(u => !Number.isSafeInteger(u.healthRevision ?? 0) || (u.healthRevision ?? 0) < 0 ||
+      !Number.isSafeInteger(u.faultUntil ?? 0) || (u.faultUntil ?? 0) < 0 ||
+      (u.faultReason != null && typeof u.faultReason !== 'string')) ||
     (config.activeUpstreamId !== null && !config.upstreams.some(u => u.id === config.activeUpstreamId)) ||
     config.accessKeys.some(k => {
       const ids = keyUpstreamIds(k);
@@ -12,6 +15,38 @@ export function snapshot(version: number, config: Config): Snapshot {
     throw new Error('Invalid stored configuration');
   }
   return { version, config, keysByHash: new Map(config.accessKeys.map(k => [k.keyHash, k])) };
+}
+
+// Locate by stable ID inside the statement, never by an index from a cached array.
+// All expressions use one materialized target; only the matching upstream is patched.
+async function changeHealth(env: Env, id: string, failure?: { revision: number; seconds: number; reason: string }): Promise<Snapshot | null> {
+  const row = await env.DB.withSession('first-primary').prepare(`
+    WITH target AS MATERIALIZED (
+      SELECT '$.upstreams[' || item.key || ']' AS path,
+             COALESCE(json_extract(item.value, '$.healthRevision'), 0) AS revision
+      FROM config, json_each(config.config_json, '$.upstreams') AS item
+      WHERE config.id = 1 AND json_extract(item.value, '$.id') = ?
+        ${failure ? "AND COALESCE(json_extract(item.value, '$.healthRevision'), 0) = ? AND COALESCE(json_extract(item.value, '$.faultUntil'), 0) <= unixepoch() * 1000" : ''}
+    )
+    UPDATE config SET config_json = json_set(config_json,
+      (SELECT path FROM target) || '.healthRevision', (SELECT revision FROM target) + 1,
+      (SELECT path FROM target) || '.faultUntil', ${failure ? 'unixepoch() * 1000 + ?' : '0'},
+      (SELECT path FROM target) || '.faultReason', ?),
+      version = version + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = 1 AND EXISTS (SELECT path FROM target)
+    RETURNING version, config_json
+  `).bind(...(failure ? [id, failure.revision, failure.seconds * 1000, failure.reason] : [id, null]))
+    .first<{ version: number; config_json: string }>();
+  return row ? snapshot(row.version, JSON.parse(row.config_json)) : null;
+}
+
+export function recordUpstreamFault(env: Env, id: string, revision: number, seconds: number, reason: string): Promise<Snapshot | null> {
+  return changeHealth(env, id, { revision, seconds, reason });
+}
+
+export function clearUpstreamFault(env: Env, id: string): Promise<Snapshot | null> {
+  // Even a clear with no active fault advances the revision to fence in-flight requests.
+  return changeHealth(env, id);
 }
 export async function readConfig(env: Env): Promise<Snapshot> {
   try {

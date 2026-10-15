@@ -2,6 +2,7 @@ import { forwardingToken, COOKIE_NAME } from './auth';
 import { getCache } from './cache';
 import { decryptKey, hash } from './crypto';
 import { HttpError } from './errors';
+import { recordUpstreamFault } from './storage';
 import { keyUpstreamIds } from './key-routing';
 import { getUpstreamHealth, upstreamCooldownSeconds } from './upstream-health';
 import { isSelf } from './validation';
@@ -34,7 +35,7 @@ function outboundHeaders(request: Request, upgrade: boolean): Headers {
   }
   return headers;
 }
-export async function proxy(request: Request, env: Env): Promise<Response> {
+export async function proxy(request: Request, env: Env, context?: Pick<ExecutionContext, 'waitUntil'>): Promise<Response> {
   const token = forwardingToken(request);
   const state = await getCache(env).get();
   const accessKey = state.keysByHash.get(await hash(token));
@@ -48,6 +49,24 @@ export async function proxy(request: Request, env: Env): Promise<Response> {
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
   requireConnected(request.signal);
   const attempt = getUpstreamHealth(env).select(state, ids, cooldownMs, timeoutSeconds * 1000);
+  const fail = async (reason: string) => {
+    if (!attempt.finish('failed')) return;
+    const started = Date.now();
+    const persist = (async () => {
+      try {
+        const next = await recordUpstreamFault(env, attempt.upstream.id, attempt.upstream.healthRevision ?? 0, cooldownMs / 1000, reason);
+        if (next) {
+          const published = getCache(env).publish(next, started);
+          getUpstreamHealth(env).sync(published);
+        }
+        // Zero matched rows are expected: never retry an old request with a new revision.
+      } catch {
+        console.error('UPSTREAM_FAULT_PERSIST_FAILED', { upstreamId: attempt.upstream.id });
+      }
+    })();
+    if (context) context.waitUntil(persist);
+    else await persist;
+  };
   try {
     const { upstream } = attempt;
     const target = targetUrl(upstream.baseUrl, new URL(request.url));
@@ -67,7 +86,7 @@ export async function proxy(request: Request, env: Env): Promise<Response> {
       });
     } catch {
       requireConnected(request.signal);
-      attempt.finish('failed');
+      await fail(controller.signal.aborted ? 'timeout' : 'connection');
       if (controller.signal.aborted) throw new HttpError(504, 'UPSTREAM_TIMEOUT', '上游响应超时');
       throw new HttpError(502, 'UPSTREAM_UNAVAILABLE', '上游连接失败');
     } finally {
@@ -78,7 +97,8 @@ export async function proxy(request: Request, env: Env): Promise<Response> {
       requireConnected(request.signal);
     }
     const failed = [401, 403, 408, 429].includes(response.status) || (response.status >= 500 && response.status <= 599);
-    attempt.finish(failed ? 'failed' : 'healthy');
+    if (failed) await fail(`HTTP ${response.status}`);
+    else attempt.finish('healthy');
     // Return even failed responses untouched. Only a later client request can use another upstream.
     return response;
   } finally {

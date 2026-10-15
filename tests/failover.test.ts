@@ -2,9 +2,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { getCache, type ConfigCache } from '../src/cache';
 import { encryptKey, hash } from '../src/crypto';
 import { proxy } from '../src/proxy';
-import { snapshot } from '../src/storage';
+import { recordUpstreamFault, snapshot } from '../src/storage';
 import type { Env, Snapshot, Upstream } from '../src/types';
 
+vi.mock('../src/storage', async importOriginal => ({...await importOriginal<typeof import('../src/storage')>(), recordUpstreamFault: vi.fn(async () => null)}));
 vi.mock('../src/cache', () => ({ getCache: vi.fn() }));
 const token = `relay_${'a'.repeat(43)}`;
 const env = { UPSTREAM_KEY_ENCRYPTION_KEY: Buffer.alloc(32, 17).toString('base64') } as Env;
@@ -28,11 +29,47 @@ beforeEach(() => {
   env.DB = {} as D1Database;
   state = snapshot(1, { activeUpstreamId: 'c', upstreams, accessKeys: [{ id: 'key', name: 'test', keyPrefix: 'relay_a', createdAt: '', keyHash, upstreamIds: ['a','b','c'] }] });
   vi.mocked(getCache).mockReturnValue({ get: async () => state } as ConfigCache);
+  vi.mocked(recordUpstreamFault).mockReset().mockResolvedValue(null);
   fetchMock.mockReset(); vi.stubGlobal('fetch', fetchMock);
 });
 afterEach(() => vi.unstubAllGlobals());
 
 describe('ordered upstream cooldown', () => {
+  it('coalesces concurrent failure reports and silently ignores zero matched rows', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const pending: Array<(response: Response) => void> = [];
+    fetchMock.mockImplementation(() => new Promise<Response>(resolve => pending.push(resolve)));
+    try {
+      const requests = [proxy(request(), env), proxy(request(), env)];
+      await vi.waitFor(() => expect(pending).toHaveLength(2));
+      pending.forEach(resolve => resolve(new Response('original', {status:503})));
+      const responses = await Promise.all(requests);
+      expect(responses.map(response => response.status)).toEqual([503,503]);
+      expect(recordUpstreamFault).toHaveBeenCalledTimes(1);
+      expect(recordUpstreamFault).toHaveBeenCalledWith(env, 'a', 0, 1800, 'HTTP 503');
+      expect(log).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); }
+  });
+  it('keeps the original error and local cooldown when D1 fails, logging no secrets', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(recordUpstreamFault).mockRejectedValueOnce(new Error('private database details'));
+    fetchMock.mockResolvedValueOnce(new Response('original error', {status:429})).mockResolvedValueOnce(new Response('next'));
+    try {
+      expect(await (await proxy(request(), env)).text()).toBe('original error');
+      expect(await (await proxy(request(), env)).text()).toBe('next');
+      expect(new URL(fetchMock.mock.calls[1][0]).hostname).toBe('b.example');
+      expect(log).toHaveBeenCalledExactlyOnceWith('UPSTREAM_FAULT_PERSIST_FAILED', {upstreamId:'a'});
+    } finally { log.mockRestore(); }
+  });
+  it('uses waitUntil to persist without delaying the upstream response', async () => {
+    let complete!: (value: null) => void;
+    vi.mocked(recordUpstreamFault).mockReturnValueOnce(new Promise(resolve => { complete = resolve; }));
+    fetchMock.mockResolvedValueOnce(new Response('original', {status:503}));
+    const waitUntil = vi.fn();
+    const response = await proxy(request(), env, {waitUntil});
+    expect(response.status).toBe(503); expect(waitUntil).toHaveBeenCalledTimes(1);
+    complete(null); await waitUntil.mock.calls[0][0];
+  });
   it('attempts once per request, skips cooling upstreams, and rebuilds URL and credentials for each client retry', async () => {
     const prefixes: Record<string, string> = { a: '/v1', b: '/gateway', c: '/gateway/v1/' };
     state.config.upstreams = upstreams.map(upstream => ({ ...upstream, baseUrl: `https://${upstream.id}.example${prefixes[upstream.id]}` }));
@@ -95,7 +132,7 @@ describe('ordered upstream cooldown', () => {
   it('returns 502 without exposing connection errors and rejects all-cooling requests without fetching', async () => {
     fetchMock.mockRejectedValue(new Error('secret-a'));
     for (let i = 0; i < 3; i++) await expect(proxy(request(), env)).rejects.toMatchObject({status:502,message:'上游连接失败'});
-    await expect(proxy(request(), env)).rejects.toMatchObject({status:503,code:'UPSTREAMS_COOLING_DOWN',headers:{'Retry-After':'180'}});
+    await expect(proxy(request(), env)).rejects.toMatchObject({status:503,code:'UPSTREAMS_COOLING_DOWN',headers:{'Retry-After':'1800'}});
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
   it('does not penalize the upstream after client cancellation', async () => {
