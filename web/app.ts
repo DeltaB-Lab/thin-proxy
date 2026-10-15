@@ -60,9 +60,17 @@ function button(text: string, className: string, handler: () => void) {
   const el = document.createElement('button'); el.type = 'button'; el.textContent = text; el.className = className; el.addEventListener('click', handler); return el;
 }
 function saved() { notify(settings.cacheTtlSeconds ? `已保存，约 ${settings.cacheTtlSeconds} 秒内生效。` : '已保存。'); }
+function setUpstreamKeyVisible(visible: boolean) {
+  $<HTMLInputElement>('upstream-key').type = visible ? 'text' : 'password';
+  const toggle = $('toggle-upstream-key');
+  const label = visible ? '隐藏 Key' : '显示 Key';
+  toggle.setAttribute('aria-label', label); toggle.setAttribute('aria-pressed', String(visible)); toggle.title = label;
+  $('upstream-key-eye-slash').toggleAttribute('hidden', !visible);
+}
 function editUpstream(upstream?: Upstream) {
   document.querySelectorAll('.dialog-error').forEach(e => e.remove());
   const form = $<HTMLFormElement>('upstream-form'); form.reset();
+  setUpstreamKeyVisible(false);
   $('auth-test-results').hidden = true; $('auth-test-results').replaceChildren();
   const set = (name: string, value: string) => (form.elements.namedItem(name) as HTMLInputElement).value = value;
   set('id', upstream?.id ?? ''); set('name', upstream?.name ?? ''); set('baseUrl', upstream?.baseUrl ?? ''); set('authType', upstream?.authType ?? 'bearer');
@@ -195,6 +203,7 @@ $<HTMLFormElement>('login-form').addEventListener('submit', e => { e.preventDefa
 }); });
 $('logout').addEventListener('click', () => void action(async () => { await api('/session', 'DELETE'); showLogin(); $('notice').hidden = true; }));
 $('add-upstream').addEventListener('click', () => editUpstream());
+$('toggle-upstream-key').addEventListener('click', () => setUpstreamKeyVisible($<HTMLInputElement>('upstream-key').type === 'password'));
 $('add-key').addEventListener('click', () => editKey());
 $('key-route-mode').addEventListener('change', renderKeyRoutes);
 $('key-failover-enabled').addEventListener('change', renderKeyRoutes);
@@ -204,6 +213,9 @@ $('add-key-route').addEventListener('click', () => {
 });
 document.querySelectorAll<HTMLButtonElement>('[data-close]').forEach(b => b.addEventListener('click', () => $<HTMLDialogElement>(b.dataset.close!).close()));
 $<HTMLDialogElement>('created-dialog').addEventListener('close', () => { $<HTMLTextAreaElement>('created-key').value = ''; });
+$<HTMLDialogElement>('upstream-dialog').addEventListener('close', () => {
+  $<HTMLInputElement>('upstream-key').value = ''; setUpstreamKeyVisible(false);
+});
 interface AuthTest { results: { authType: string; status: number | null; outcome: 'available' | 'rejected' | 'unknown'; message: string }[] }
 const upstreamForm = $<HTMLFormElement>('upstream-form');
 upstreamForm.addEventListener('input', () => { $('auth-test-results').hidden = true; });
