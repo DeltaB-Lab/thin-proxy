@@ -48,7 +48,7 @@ describe('management snapshot and write minimization', () => {
     const response = await call('/snapshot');
     expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect(await response.json()).toEqual({
-      config: { proxyUrl: origin, activeUpstreamId: 'a', cacheTtlSeconds: 30, version: 7 },
+      config: { proxyUrl: origin, activeUpstreamId: 'a', cacheTtlSeconds: 30, upstreamCooldownSeconds: 180, version: 7 },
       upstreams: ['a', 'b'].map(id => ({ id, name: id, baseUrl: `https://${id}.example/`, authType: 'bearer', hasKey: true })),
       keys: [{ id: 'k', name: 'Key', keyPrefix: 'relay_prefix', createdAt: '2026-10-15', upstreamIds: ['a', 'b'], canReveal: true }]
     });
@@ -59,6 +59,8 @@ describe('management snapshot and write minimization', () => {
   it.each([
     ['/upstreams/a', 'PATCH', { name: 'a', baseUrl: 'https://a.example/', authType: 'bearer', key: '' }],
     ['/keys/k', 'PATCH', { upstreamIds: ['a', 'b'] }],
+    ['/keys/k', 'PATCH', { name: ' Key ' }],
+    ['/keys/k', 'PATCH', { name: 'Key', upstreamIds: ['a', 'b'] }],
     ['/active-upstream', 'PUT', { id: 'a' }]
   ])('does not write or publish unchanged %s', async (path, method, body) => {
     const { call, env, read, write, row } = setup();

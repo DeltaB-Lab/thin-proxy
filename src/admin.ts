@@ -5,6 +5,7 @@ import { decryptAccessKey, decryptKey, encryptAccessKey, encryptKey, hash, rando
 import { HttpError, json } from './errors';
 import { keyUpstreamIds } from './key-routing';
 import { readConfig, writeConfig } from './storage';
+import { upstreamCooldownSeconds } from './upstream-health';
 import { authType, baseUrl, field, invalid, managementBody, upstreamKey } from './validation';
 import type { AccessKey, Config, Env, Snapshot } from './types';
 
@@ -65,6 +66,7 @@ export async function admin(request: Request, env: Env): Promise<Response> {
       proxyUrl: new URL(request.url).origin,
       activeUpstreamId: state.config.activeUpstreamId,
       cacheTtlSeconds: Number(env.CONFIG_CACHE_TTL_SECONDS ?? '30'),
+      upstreamCooldownSeconds: upstreamCooldownSeconds(env),
       version: state.version
     };
     if (path === '/snapshot') return json({
@@ -152,12 +154,16 @@ export async function admin(request: Request, env: Env): Promise<Response> {
     if (!record) throw notFound();
     if (method === 'DELETE') config.accessKeys = config.accessKeys.filter(k => k.id !== record.id);
     else {
-      const ids = keyUpstreams(body, config);
-      // Preserve an unchanged legacy representation rather than writing only
-      // to normalize it. List order is significant for upstream failover.
-      if (JSON.stringify(keyUpstreamIds(record)) !== JSON.stringify(ids)) {
-        record.upstreamIds = ids;
-        delete record.upstreamId;
+      const changesRoutes = body.upstreamIds !== undefined || body.upstreamId !== undefined;
+      if (body.name === undefined && !changesRoutes) invalid('请提供名称或上游配置');
+      if (body.name !== undefined) record.name = field(body.name, '名称');
+      if (changesRoutes) {
+        const ids = keyUpstreams(body, config);
+        // Preserve unchanged legacy bindings; list order remains significant.
+        if (JSON.stringify(keyUpstreamIds(record)) !== JSON.stringify(ids)) {
+          record.upstreamIds = ids;
+          delete record.upstreamId;
+        }
       }
       result = publicKey(record);
     }

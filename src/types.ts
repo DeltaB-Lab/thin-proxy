@@ -5,6 +5,7 @@ export interface Env {
   UPSTREAM_KEY_ENCRYPTION_KEY: string;
   CONFIG_CACHE_TTL_SECONDS?: string;
   UPSTREAM_TIMEOUT_SECONDS?: string;
+  UPSTREAM_COOLDOWN_SECONDS?: string;
   SELF_HOSTS?: string;
 }
 export type AuthType = 'bearer' | 'x-api-key';

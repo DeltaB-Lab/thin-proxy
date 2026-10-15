@@ -2,7 +2,6 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { getCache, type ConfigCache } from '../src/cache';
 import { encryptKey, hash } from '../src/crypto';
 import { proxy } from '../src/proxy';
-import { MAX_REPLAY_BYTES, replayBody } from '../src/replay-body';
 import { snapshot } from '../src/storage';
 import type { Env, Snapshot, Upstream } from '../src/types';
 
@@ -26,18 +25,18 @@ beforeAll(async () => {
   })));
 });
 beforeEach(() => {
+  env.DB = {} as D1Database;
   state = snapshot(1, { activeUpstreamId: 'c', upstreams, accessKeys: [{ id: 'key', name: 'test', keyPrefix: 'relay_a', createdAt: '', keyHash, upstreamIds: ['a','b','c'] }] });
   vi.mocked(getCache).mockReturnValue({ get: async () => state } as ConfigCache);
   fetchMock.mockReset(); vi.stubGlobal('fetch', fetchMock);
 });
 afterEach(() => vi.unstubAllGlobals());
 
-describe('ordered upstream failover', () => {
-  it('tries each upstream in order, replaces credentials, and restarts from the first on each request', async () => {
+describe('ordered upstream cooldown', () => {
+  it('attempts once per request, skips cooling upstreams, and rebuilds URL and credentials for each client retry', async () => {
     const prefixes: Record<string, string> = { a: '/v1', b: '/gateway', c: '/gateway/v1/' };
     state.config.upstreams = upstreams.map(upstream => ({ ...upstream, baseUrl: `https://${upstream.id}.example${prefixes[upstream.id]}` }));
     const calls: string[] = [];
-    const cancelled = vi.fn();
     fetchMock.mockImplementation(async (url: string, init: RequestInit) => {
       const id = new URL(url).hostname[0]; calls.push(id);
       expect(url).toBe(`https://${id}.example${id === 'a' ? '' : '/gateway'}/v1/messages?x=1&x=2`);
@@ -46,97 +45,109 @@ describe('ordered upstream failover', () => {
       expect(headers.has(id === 'b' ? 'Authorization' : 'x-api-key')).toBe(false);
       expect(init.redirect).toBe('manual');
       if (id === 'a') throw new Error('connection refused');
-      if (id === 'b') return new Response(new ReadableStream({cancel:cancelled}), {status:503});
-      return new Response('ok');
+      return new Response(id, {status:id === 'b' ? 503 : 200});
     });
-    expect(await (await proxy(request(), env)).text()).toBe('ok');
-    expect(await (await proxy(request(), env)).text()).toBe('ok');
-    expect(calls).toEqual(['a','b','c','a','b','c']); expect(cancelled).toHaveBeenCalledTimes(2);
+    await expect(proxy(request(), env)).rejects.toMatchObject({status:502});
+    expect(await (await proxy(request(), env)).text()).toBe('b');
+    expect(await (await proxy(request(), env)).text()).toBe('c');
+    expect(await (await proxy(request(), env)).text()).toBe('c');
+    expect(calls).toEqual(['a','b','c','c']);
   });
-  it.each([401,403,408,429,500,502,503,504])('fails over status %i before returning a response', async status => {
-    fetchMock.mockResolvedValueOnce(new Response('failure', {status})).mockResolvedValueOnce(new Response('next'));
-    expect(await (await proxy(request(), env)).text()).toBe('next'); expect(fetchMock).toHaveBeenCalledTimes(2);
+  it.each([401,403,408,429,500,502,503,504,599])('returns status %i unchanged and cools it for the next request', async status => {
+    const failed = new Response('original failure', {status,headers:{'Retry-After':'7','X-Upstream':'a'}});
+    fetchMock.mockResolvedValueOnce(failed).mockResolvedValueOnce(new Response('next'));
+    expect(await proxy(request(), env)).toBe(failed);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await failed.text()).toBe('original failure'); expect(failed.headers.get('Retry-After')).toBe('7');
+    expect(await (await proxy(request(), env)).text()).toBe('next');
+    expect(fetchMock.mock.calls.map(call => new URL(call[0]).hostname)).toEqual(['a.example','b.example']);
   });
-  it.each([200,400,404,422,307])('returns status %i directly without trying a later upstream', async status => {
+  it.each([200,400,404,422,307])('keeps status %i eligible on subsequent requests', async status => {
     const response = new Response('original', {status}); fetchMock.mockResolvedValue(response);
-    expect(await proxy(request(), env)).toBe(response); expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await proxy(request(), env)).toBe(response);
+    expect(await proxy(request(), env)).toBe(response);
+    expect(fetchMock.mock.calls.map(call => new URL(call[0]).hostname)).toEqual(['a.example','a.example']);
   });
   it.each([
     ['application/json', Buffer.from(' { "nested" : [1, null, "中文"] }\n')],
     ['application/octet-stream', Buffer.from([0,255,13,10,128])],
     ['multipart/form-data; boundary=x', Buffer.from('--x\r\nContent-Disposition: form-data; name="a"\r\n\r\nb\r\n--x--\r\n')]
-  ])('replays exactly the same %s bytes after each failure', async (contentType, bytes) => {
+  ])('forwards the original %s stream and preserves failed response bytes', async (contentType, bytes) => {
+    const original = request({method:'POST',body:bytes,headers:{'Content-Type':contentType}});
     fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
+      expect(init.body).toBe(original.body);
       expect([...new Uint8Array(await new Response(init.body).arrayBuffer())]).toEqual([...bytes]);
       expect(new Headers(init.headers).get('Content-Type')).toBe(contentType);
       return new Response('failed', {status:503});
     });
-    const response = await proxy(request({method:'POST',body:bytes,headers:{'Content-Type':contentType}}), env);
-    expect(response.status).toBe(503); expect(await response.text()).toBe('failed'); expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(await (await proxy(original, env)).text()).toBe('failed'); expect(fetchMock).toHaveBeenCalledTimes(1);
   });
-  it('cancels header timeouts, tries the next upstream, and returns 504 when all time out', async () => {
-    const hang = (_url: string, init: RequestInit) => new Promise<Response>((_resolve,reject) => {
+  it('returns 504 on a header timeout, then selects the next upstream on a new request', async () => {
+    fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => new Promise<Response>((_resolve,reject) => {
       init.signal!.addEventListener('abort', () => reject(new Error('aborted')), {once:true});
-    });
-    fetchMock.mockImplementationOnce(hang).mockResolvedValueOnce(new Response('next'));
+    })).mockResolvedValueOnce(new Response('next'));
     const timedEnv = {...env,UPSTREAM_TIMEOUT_SECONDS:'0.01'};
-    expect(await (await proxy(request(), timedEnv)).text()).toBe('next');
-    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
-    fetchMock.mockReset().mockImplementation(hang);
     await expect(proxy(request(), timedEnv)).rejects.toMatchObject({status:504,code:'UPSTREAM_TIMEOUT'});
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(1); expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+    expect(await (await proxy(request(), timedEnv)).text()).toBe('next');
+    expect(new URL(fetchMock.mock.calls[1][0]).hostname).toBe('b.example');
   });
-  it('returns 502 after exhausting connection failures without exposing errors', async () => {
+  it('returns 502 without exposing connection errors and rejects all-cooling requests without fetching', async () => {
     fetchMock.mockRejectedValue(new Error('secret-a'));
-    await expect(proxy(request(), env)).rejects.toMatchObject({status:502,message:'上游连接失败'});
+    for (let i = 0; i < 3; i++) await expect(proxy(request(), env)).rejects.toMatchObject({status:502,message:'上游连接失败'});
+    await expect(proxy(request(), env)).rejects.toMatchObject({status:503,code:'UPSTREAMS_COOLING_DOWN',headers:{'Retry-After':'180'}});
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
-  it('never fails over after the client cancels', async () => {
+  it('does not penalize the upstream after client cancellation', async () => {
     const controller = new AbortController();
-    fetchMock.mockImplementation(async () => { controller.abort(); throw new Error('cancelled'); });
+    fetchMock.mockImplementationOnce(async () => { controller.abort(); throw new Error('cancelled'); }).mockResolvedValueOnce(new Response('ok'));
     await expect(proxy(request({signal:controller.signal}), env)).rejects.toMatchObject({status:499});
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await (await proxy(request(), env)).text()).toBe('ok');
+    expect(fetchMock.mock.calls.map(call => new URL(call[0]).hostname)).toEqual(['a.example','a.example']);
   });
-  it('does not restart after an accepted response stream fails or its former header deadline passes', async () => {
+  it('does not restart or cool after an accepted response stream fails or its former header deadline passes', async () => {
     let streamController!: ReadableStreamDefaultController;
     const response = new Response(new ReadableStream({start(controller) {streamController = controller; controller.enqueue(new TextEncoder().encode('data: first\n\n'));}}), {headers:{'Content-Type':'text/event-stream'}});
-    fetchMock.mockResolvedValue(response);
+    fetchMock.mockResolvedValueOnce(response).mockResolvedValueOnce(new Response('ok'));
     const result = await proxy(request(), {...env,UPSTREAM_TIMEOUT_SECONDS:'0.01'});
     const reader = result.body!.getReader(); expect((await reader.read()).done).toBe(false);
     await new Promise(resolve => setTimeout(resolve,25));
     expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(false);
     streamController.error(new Error('stream broken'));
     await expect(reader.read()).rejects.toThrow('stream broken'); expect(fetchMock).toHaveBeenCalledTimes(1);
+    await proxy(request(), env); expect(new URL(fetchMock.mock.calls[1][0]).hostname).toBe('a.example');
   });
-  it('only uses explicitly selected routes and keeps single-upstream bodies streaming', async () => {
-    state.config.accessKeys[0].upstreamIds = ['b'];
-    const original = request({method:'POST',body:new Uint8Array(MAX_REPLAY_BYTES + 1)});
+  it('does not pre-read or cap multi-upstream request streams above 8 MiB', async () => {
+    let pulls = 0;
+    const size = 9 * 1024 * 1024;
+    const source = new ReadableStream({pull(controller) { pulls++; controller.enqueue(new Uint8Array(size)); controller.close(); }}, {highWaterMark:0});
+    const original = request({method:'POST',body:source,duplex:'half'} as RequestInit);
     fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
-      expect(init.body).toBe(original.body); return new Response('last', {status:503});
+      expect(pulls).toBe(0); expect(init.body).toBe(original.body);
+      expect((await new Response(init.body).arrayBuffer()).byteLength).toBe(size);
+      return new Response('ok');
     });
-    expect((await proxy(original,env)).status).toBe(503); expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await (await proxy(original,env)).text()).toBe('ok'); expect(fetchMock).toHaveBeenCalledTimes(1);
   });
-  it('rejects oversized replay bodies before sending to any upstream', async () => {
-    await expect(proxy(request({method:'POST',body:new Uint8Array(MAX_REPLAY_BYTES+1)}),env)).rejects.toMatchObject({status:413});
-    expect(fetchMock).not.toHaveBeenCalled();
+  it('only uses explicitly selected routes or the configured default', async () => {
+    state.config.accessKeys[0].upstreamIds = ['b'];
+    fetchMock.mockResolvedValue(new Response('ok'));
+    await proxy(request(),env);
+    state.config.accessKeys[0].upstreamIds = null;
+    await proxy(request(),env);
+    expect(fetchMock.mock.calls.map(call => new URL(call[0]).hostname)).toEqual(['b.example','c.example']);
   });
-});
-
-describe('bounded raw request replay', () => {
-  it('accepts the exact limit and reconstructs arbitrarily split bytes', async () => {
-    const bytes = new Uint8Array(MAX_REPLAY_BYTES); bytes[0] = 255; bytes[65_535] = 17; bytes[bytes.length-1] = 128;
-    const source = new ReadableStream({start(controller) {
-      controller.enqueue(bytes.subarray(0,1)); controller.enqueue(new Uint8Array());
-      controller.enqueue(bytes.subarray(1,65_538)); controller.enqueue(bytes.subarray(65_538)); controller.close();
-    }});
-    const incoming = new Request('https://relay.example', {method:'POST',body:source,duplex:'half'} as RequestInit);
-    const body = await replayBody(incoming);
-    for (let i=0;i<2;i++) expect(Buffer.from(await new Response(body()).arrayBuffer()).equals(Buffer.from(bytes))).toBe(true);
-  });
-  it('cancels a pending body read when the client disconnects', async () => {
-    const controller = new AbortController(); const cancel = vi.fn();
-    const incoming = new Request('https://relay.example',{method:'POST',body:new ReadableStream({cancel}),signal:controller.signal,duplex:'half'} as RequestInit);
-    const pending = replayBody(incoming); controller.abort();
-    await expect(pending).rejects.toMatchObject({status:499}); expect(cancel).toHaveBeenCalledTimes(1);
+  it('honors the configured cooldown and resumes the first upstream after expiry', async () => {
+    let now = 1_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const configured = {...env,UPSTREAM_COOLDOWN_SECONDS:'300'};
+      fetchMock.mockResolvedValueOnce(new Response('failed', {status:503})).mockImplementation(async () => new Response('ok'));
+      await proxy(request(),configured);
+      now += 180_000; await proxy(request(),configured);
+      now += 120_000; await proxy(request(),configured);
+      await proxy(request(),configured);
+      expect(fetchMock.mock.calls.map(call => new URL(call[0]).hostname)).toEqual(['a.example','b.example','a.example','a.example']);
+    } finally { clock.mockRestore(); }
   });
 });
