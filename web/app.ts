@@ -60,6 +60,7 @@ function saved() { notify(settings.cacheTtlSeconds ? `已保存，约 ${settings
 function editUpstream(upstream?: Upstream) {
   document.querySelectorAll('.dialog-error').forEach(e => e.remove());
   const form = $<HTMLFormElement>('upstream-form'); form.reset();
+  $('auth-test-results').hidden = true; $('auth-test-results').replaceChildren();
   const set = (name: string, value: string) => (form.elements.namedItem(name) as HTMLInputElement).value = value;
   set('id', upstream?.id ?? ''); set('name', upstream?.name ?? ''); set('baseUrl', upstream?.baseUrl ?? ''); set('authType', upstream?.authType ?? 'bearer');
   (form.elements.namedItem('key') as HTMLInputElement).required = !upstream;
@@ -114,6 +115,31 @@ $('add-upstream').addEventListener('click', () => editUpstream());
 $('add-key').addEventListener('click', () => { document.querySelectorAll('.dialog-error').forEach(e => e.remove()); $<HTMLFormElement>('key-form').reset(); $<HTMLDialogElement>('key-dialog').showModal(); });
 document.querySelectorAll<HTMLButtonElement>('[data-close]').forEach(b => b.addEventListener('click', () => $<HTMLDialogElement>(b.dataset.close!).close()));
 $<HTMLDialogElement>('created-dialog').addEventListener('close', () => { $<HTMLTextAreaElement>('created-key').value = ''; });
+interface AuthTest { results: { authType: string; status: number | null; outcome: 'available' | 'rejected' | 'unknown'; message: string }[] }
+const upstreamForm = $<HTMLFormElement>('upstream-form');
+upstreamForm.addEventListener('input', () => { $('auth-test-results').hidden = true; });
+$('test-auth').addEventListener('click', () => void action(async () => {
+  const data = Object.fromEntries(new FormData(upstreamForm));
+  const panel = $('auth-test-results'); panel.hidden = false; panel.textContent = '正在检测两种鉴权方式…';
+  const inputs = upstreamForm.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select');
+  inputs.forEach(input => input.disabled = true);
+  try {
+    const result = await api<AuthTest>('/test-auth', 'POST', { id: data.id, baseUrl: data.baseUrl, key: data.key });
+    panel.replaceChildren();
+    for (const item of result.results) {
+      const name = item.authType === 'bearer' ? 'Authorization: Bearer' : 'x-api-key';
+      const status = item.status === null ? '' : ' · HTTP ' + item.status;
+      panel.append(node('p', name + '：' + item.message + status, 'auth-result ' + item.outcome));
+    }
+    const available = result.results.filter(item => item.outcome === 'available');
+    if (available.length === 1) {
+      (upstreamForm.elements.namedItem('authType') as HTMLSelectElement).value = available[0].authType;
+      panel.append(node('p', '已选中通过的方式，点击保存后生效。', 'hint'));
+    } else if (available.length === 2) panel.append(node('p', '两种方式均通过，保留当前选择。', 'hint'));
+    else panel.append(node('p', '未确认可用方式，保留当前选择。模型调用权限需另行验证。', 'hint'));
+  } catch (e) { panel.textContent = '检测未完成'; throw e; }
+  finally { inputs.forEach(input => input.disabled = false); }
+}));
 $<HTMLFormElement>('upstream-form').addEventListener('submit', e => { e.preventDefault(); void action(async () => {
   const form = $<HTMLFormElement>('upstream-form'); const data = Object.fromEntries(new FormData(form)); const id = data.id as string; delete data.id;
   await api(id ? `/upstreams/${id}` : '/upstreams', id ? 'PATCH' : 'POST', data);

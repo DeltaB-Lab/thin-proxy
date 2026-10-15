@@ -1,6 +1,7 @@
+import { testUpstreamAuth } from './auth-probe';
 import { issueSession, requireOrigin, requireSession, sessionCookie } from './auth';
 import { getCache } from './cache';
-import { encryptKey, hash, randomToken, sameSecret } from './crypto';
+import { decryptKey, encryptKey, hash, randomToken, sameSecret } from './crypto';
 import { HttpError, json } from './errors';
 import { readConfig, writeConfig } from './storage';
 import { authType, baseUrl, field, invalid, managementBody, upstreamKey } from './validation';
@@ -42,6 +43,20 @@ export async function admin(request: Request, env: Env): Promise<Response> {
       cacheTtlSeconds: Number(env.CONFIG_CACHE_TTL_SECONDS ?? '30'),
       version: state.version
     });
+  }
+  if (path === '/test-auth' && method === 'POST') {
+    const body = await managementBody(request);
+    const target = baseUrl(body.baseUrl, request, env);
+    let key: string;
+    if (body.key !== undefined && body.key !== '') key = upstreamKey(body.key);
+    else {
+      const id = field(body.id, '上游 ID');
+      const saved = (await readConfig(env)).config.upstreams.find(u => u.id === id);
+      if (!saved) throw notFound();
+      if (target !== saved.baseUrl) invalid('地址已修改，请重新填写 Key 后测试');
+      key = await decryptKey(env, saved);
+    }
+    return json(await testUpstreamAuth(target, key));
   }
   const upstreamMatch = /^\/upstreams\/([^/]+)$/.exec(path);
   const keyMatch = /^\/keys\/([^/]+)$/.exec(path);
