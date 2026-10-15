@@ -12,6 +12,10 @@ let keyA: string; let keyB: string; let idA: string; let upstreamA: string; let 
 const upstreamScript = `
 export default { async fetch(request) {
   const url = new URL(request.url);
+  if (url.pathname.endsWith('/models')) {
+    const valid = url.hostname === 'a.example' ? request.headers.get('Authorization') === 'Bearer upstream-secret-A' : request.headers.get('x-api-key') === 'upstream-secret-B';
+    return valid ? Response.json({data:[{id:'test-model'}]}) : new Response('unauthorized', {status:401});
+  }
   if (request.headers.get('Upgrade') === 'websocket') {
     if (url.pathname.includes('ws-fail')) return new Response('handshake refused', {status: 403});
     const pair = new WebSocketPair(); pair[1].binaryType = 'arraybuffer'; pair[1].accept();
@@ -93,6 +97,24 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     expect(row!.config_json).not.toContain('upstream-secret-A'); expect(row!.config_json).not.toContain(keyA);
     expect((await admin('/active-upstream', 'PUT', { id: upstreamA })).status).toBe(200);
     expect((await admin(`/upstreams/${upstreamA}`, 'DELETE')).status).toBe(409);
+  });
+  it('tests a stored upstream key without changing selection or configuration', async () => {
+    const before = await value(await admin('/config'));
+    const result = await value(await admin('/test-auth', 'POST', {id:upstreamA,baseUrl:'https://a.example/gateway',key:''}));
+    expect(result.anonymousStatus).toBe(401);
+    expect(result.results.map((r: any) => r.outcome)).toEqual(['available','rejected']);
+    expect(JSON.stringify(result)).not.toContain('upstream-secret');
+    expect(await value(await admin('/config'))).toEqual(before);
+    const b = await value(await admin('/test-auth', 'POST', {baseUrl:'https://b.example',key:'upstream-secret-B'}));
+    expect(b.results.map((r: any) => r.outcome)).toEqual(['rejected','available']);
+  });
+  it('protects auth testing with admin session, same origin and destination validation', async () => {
+    expect((await admin('/test-auth','POST',{baseUrl:'https://a.example',key:'secret'},false)).status).toBe(401);
+    const cross = await mf.dispatchFetch(origin+'/_relay/api/test-auth', {method:'POST',headers:{Cookie:cookie,Origin:'https://evil.example','Content-Type':'application/json'},body:JSON.stringify({baseUrl:'https://a.example',key:'secret'})});
+    expect(cross.status).toBe(403);
+    for (const target of ['https://relay.example','https://127.0.0.1','http://a.example']) expect((await admin('/test-auth','POST',{baseUrl:target,key:'secret'})).status).toBe(400);
+    expect((await admin('/test-auth','POST',{id:upstreamA,baseUrl:'https://changed.example',key:''})).status).toBe(400);
+    expect((await admin('/test-auth','POST',{id:'missing',baseUrl:'https://a.example',key:''})).status).toBe(404);
   });
   it.each([
     ['application/json', Buffer.from(' { "messages" : [{"content":{"nested":[1,null,"中文"]}}], "extra":true }\n')],
