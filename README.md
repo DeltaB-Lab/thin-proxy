@@ -32,11 +32,15 @@ npm run dev
 
 ## 部署到 Cloudflare
 
-此项目尚未自动创建云资源。按顺序操作：
+当前生产环境已部署，管理页面为 `https://relay.example.com/_relay/`，代理地址为 `https://relay.example.com`。仅 main 分支自动部署；workers.dev、版本预览 URL 和预览分支构建均关闭。部署设置见 [自动部署文档](docs/04-自动部署.md)。
+
+本机生产管理密钥保存在 Git 忽略的 `.env` 中（ADMIN_KEY），只供读取并登录生产网页；本地开发仍使用 `.dev.vars`。不要上传这些文件。自定义域名是代理入口，不能把 `relay.example.com` 配为上游。
+
+在其他 Cloudflare 账户新建环境时，按顺序操作：
 
 1. `npx wrangler login`。
 2. `npx wrangler d1 create thin-proxy`。
-3. 将返回的数据库 ID 填进 `wrangler.jsonc` 的 database_id。配置没有真实账号或数据库 ID。
+3. 将自己的账号 ID、数据库 ID 和自定义域名填进 `wrangler.jsonc`。仓库中的值属于当前生产环境，不能直接用于其他账户。
 4. 设置 `SELF_HOSTS` 为全部代理域名（逗号分隔，包括 workers.dev 和自定义域名），避免别名回源循环。当前请求域名也会自动拒绝为上游。
 5. 用密码管理器或本地安全随机数生成器准备两个独立密钥：ADMIN_KEY 至少 32 个随机字符；UPSTREAM_KEY_ENCRYPTION_KEY 为恰好 32 随机字节的 Base64 编码。
 6. 使用下面的交互式命令写入 Secret，不把真实密钥写进命令行或普通 vars：
