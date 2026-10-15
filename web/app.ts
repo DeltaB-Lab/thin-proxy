@@ -20,7 +20,7 @@ function showLogin() {
 }
 function navigate() {
   const view = ['upstreams', 'keys'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'home';
-  $('page-title').textContent = view === 'home' ? '首页' : view === 'upstreams' ? '上游' : 'API Keys';
+  $('page-title').textContent = view === 'home' ? '首页' : view === 'upstreams' ? '上游' : 'API KEYS';
   $('home-panel').hidden = view !== 'home';
   $('upstreams-section').hidden = view === 'keys';
   $('keys-section').hidden = view === 'upstreams';
