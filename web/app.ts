@@ -1,6 +1,7 @@
 interface Upstream { id: string; name: string; baseUrl: string; authType: string }
 interface KeyInfo { id: string; name: string; keyPrefix: string; createdAt: string; upstreamIds: string[] | null; canReveal: boolean }
 interface Settings { proxyUrl: string; activeUpstreamId: string | null; cacheTtlSeconds: number }
+interface ManagementSnapshot { config: Settings; upstreams: Upstream[]; keys: KeyInfo[] }
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 let settings: Settings;
 let upstreams: Upstream[] = [];
@@ -115,7 +116,7 @@ function showKey(key: string, title: string) {
   $<HTMLDialogElement>('created-dialog').showModal();
 }
 async function refresh() {
-  const [config, list, keys] = await Promise.all([api<Settings>('/config'), api<Upstream[]>('/upstreams'), api<KeyInfo[]>('/keys')]);
+  const { config, upstreams: list, keys } = await api<ManagementSnapshot>('/snapshot');
   settings = config; upstreams = list;
   $('upstream-count').textContent = String(list.length); $('key-count').textContent = String(keys.length);
   $('proxy-url').textContent = settings.proxyUrl;
