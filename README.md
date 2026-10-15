@@ -10,7 +10,7 @@
 
 ```text
 Base URL: https://你的域名
-API Key: relay_...（网页创建的转发 Key）
+API Key: sk-...（网页创建的转发 Key，含前缀共 64 个字符；已有 relay_ Key 仍可用）
 ```
 
 客户端需要 `/v1` 时，在 Base URL 后加 `/v1`。拼接处重复的完整 `/v1` 段会自动合并，例如上游 `/gateway/v1` + 请求 `/v1/messages` → `/gateway/v1/messages`；其他路径段、编码和查询参数保持原样。

@@ -52,7 +52,8 @@ export function forwardingToken(request: Request): string {
     throw new HttpError(400, 'CONFLICTING_KEYS', '两个鉴权头中的 Key 不一致');
   }
   const token = bearer ?? apiKey;
-  if (!token || token.length > 256 || !/^relay_[A-Za-z0-9_-]{43}$/.test(token)) {
+  // Keep existing relay_ credentials usable while issuing only the sk- format.
+  if (!token || !/^(?:sk-[A-Za-z0-9_-]{61}|relay_[A-Za-z0-9_-]{43})$/.test(token)) {
     throw new HttpError(401, 'INVALID_KEY', '缺少或无效的转发 Key');
   }
   return token;

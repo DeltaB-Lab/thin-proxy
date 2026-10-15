@@ -16,6 +16,10 @@ export function urlDecode(value: string): Uint8Array<ArrayBuffer> {
 export function randomToken(): string {
   return urlEncode(crypto.getRandomValues(new Uint8Array(32)));
 }
+export function randomAccessKey(): string {
+  // 61 full base64url characters retain 366 random bits; 3 + 61 = 64 characters.
+  return `sk-${urlEncode(crypto.getRandomValues(new Uint8Array(46))).slice(0, 61)}`;
+}
 export async function hash(value: string): Promise<string> {
   return urlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(value))));
 }
