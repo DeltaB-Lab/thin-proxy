@@ -98,6 +98,6 @@ npx wrangler deploy --dry-run
 
 本地集成使用 Miniflare/workerd 与受控上游，不访问真实中转站或使用生产密钥。发布前仍需用实际 Cloudflare 部署和目标中转站验证 SSE 取消、WebSocket 子协议、长连接和平台限制。
 
-业务体不主动改写，但 Host、逐跳头、平台管理的头、压缩传输及 WebSocket 帧边界不承诺网络字节级一致。应用默认关闭 Workers Observability；Cloudflare 平台自身的账户级日志规则另行适用。
+业务体不主动改写，但 Host、逐跳头、平台管理的头、压缩传输及 WebSocket 帧边界不承诺网络字节级一致。部署配置开启 Cloudflare Workers Logs，采样率为 100%，保存调用日志供控制台查询。应用代码不输出密钥、业务请求体、响应体或 WebSocket 消息，D1 不保存日志；Cloudflare 平台自身的日志规则另行适用。
 
 需求与方案：[需求文档](docs/01-需求文档.md) · [设计文档](docs/02-设计文档.md) · [架构文档](docs/03-架构文档.md)。
