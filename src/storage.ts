@@ -1,11 +1,17 @@
 import { HttpError } from './errors';
+import { keyUpstreamIds } from './key-routing';
 import type { Config, Env, Snapshot } from './types';
 export function snapshot(version: number, config: Config): Snapshot {
   if (!Number.isInteger(version) || !Array.isArray(config.upstreams) || !Array.isArray(config.accessKeys) ||
-    (config.activeUpstreamId !== null && !config.upstreams.some(u => u.id === config.activeUpstreamId))) {
+    (config.activeUpstreamId !== null && !config.upstreams.some(u => u.id === config.activeUpstreamId)) ||
+    config.accessKeys.some(k => {
+      const ids = keyUpstreamIds(k);
+      return ids !== null && (!Array.isArray(ids) || !ids.length || ids.length > 100 ||
+        new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !config.upstreams.some(u => u.id === id)));
+    })) {
     throw new Error('Invalid stored configuration');
   }
-  return { version, config, keyHashes: new Set(config.accessKeys.map(k => k.keyHash)) };
+  return { version, config, keysByHash: new Map(config.accessKeys.map(k => [k.keyHash, k])) };
 }
 export async function readConfig(env: Env): Promise<Snapshot> {
   try {

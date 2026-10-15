@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { forwardingToken, issueSession, requireSession, requireOrigin } from '../src/auth';
 import { targetUrl } from '../src/proxy';
-import { encryptKey, decryptKey } from '../src/crypto';
+import { encryptAccessKey, decryptAccessKey, encryptKey, decryptKey } from '../src/crypto';
 import { baseUrl } from '../src/validation';
 import type { Env, Upstream } from '../src/types';
 const secret = 'test-admin-only-not-for-production-123456789';
@@ -22,9 +22,27 @@ describe('credential and URL boundaries', () => {
     expect(() => forwardingToken(new Request('https://relay.example', { headers: { Authorization: `Bearer ${secret}` } }))).toThrow();
     expect(() => requireOrigin(new Request('https://relay.example/_relay/api/keys', { headers: { Origin: 'https://evil.example' } }))).toThrow();
   });
-  it('preserves encoded paths and duplicate query strings without path deduplication', () => {
+  it.each([
+    ['', '/v1/messages', '/v1/messages'],
+    ['/v1', '/messages', '/v1/messages'],
+    ['/v1', '/v1/messages', '/v1/messages'],
+    ['/gateway/v1///', '/v1/messages', '/gateway/v1/messages'],
+    ['/v1', '/v1', '/v1'],
+    ['/v1', '/v1/', '/v1/'],
+    ['/v1', '/v10/messages', '/v1/v10/messages'],
+    ['/v1', '/v1beta/messages', '/v1/v1beta/messages'],
+    ['/v10', '/v1/messages', '/v10/v1/messages'],
+    ['/gateway/v1/api', '/v1/messages', '/gateway/v1/api/v1/messages'],
+    ['/v1', '/models/v1/detail', '/v1/models/v1/detail'],
+    ['/v1', '/%76%31/messages', '/v1/%76%31/messages'],
+    ['/%76%31', '/v1/messages', '/%76%31/v1/messages'],
+    ['/v1', '/v1%2Fmessages', '/v1/v1%2Fmessages']
+  ])('joins %s and %s with only a boundary v1 overlap removed', (prefix, path, expected) => {
+    expect(targetUrl(`https://up.example${prefix}`, new URL(`https://relay.example${path}`)).pathname).toBe(expected);
+  });
+  it('preserves encoded paths and duplicate query strings when removing a boundary v1 overlap', () => {
     const incoming = new URL('https://relay.example/v1/a%2Fb?x=1&x=2&q=a%20b');
-    expect(targetUrl('https://up.example/v1/', incoming).href).toBe('https://up.example/v1/v1/a%2Fb?x=1&x=2&q=a%20b');
+    expect(targetUrl('https://up.example/v1/', incoming).href).toBe('https://up.example/v1/a%2Fb?x=1&x=2&q=a%20b');
     expect(targetUrl('https://up.example', new URL('https://relay.example//evil.example/path')).hostname).toBe('up.example');
   });
   it('rejects unsafe or self-referencing saved targets', () => {
@@ -40,5 +58,13 @@ describe('credential and URL boundaries', () => {
     expect(a.keyIv).not.toBe(b.keyIv);
     expect(await decryptKey(env, { id: 'a', ...a } as Upstream)).toBe('test-upstream-key');
     await expect(decryptKey(env, { id: 'b', ...a } as Upstream)).rejects.toThrow();
+  });
+  it('binds recoverable access keys to their id and separates them from upstream ciphertexts', async () => {
+    const encrypted = await encryptAccessKey(env, 'a', key);
+    expect(await decryptAccessKey(env, 'a', encrypted)).toBe(key);
+    await expect(decryptAccessKey(env, 'b', encrypted)).rejects.toThrow();
+    await expect(decryptKey(env, { id: 'a', ...encrypted } as Upstream)).rejects.toThrow();
+    const upstream = await encryptKey(env, 'a', key);
+    await expect(decryptAccessKey(env, 'a', upstream)).rejects.toThrow();
   });
 });

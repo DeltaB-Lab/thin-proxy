@@ -12,6 +12,10 @@ let keyA: string; let keyB: string; let idA: string; let upstreamA: string; let 
 const upstreamScript = `
 export default { async fetch(request) {
   const url = new URL(request.url);
+  if (url.searchParams.getAll('fail').includes(url.hostname)) {
+    await request.arrayBuffer();
+    return new Response('failed at ' + url.hostname, {status:Number(url.searchParams.get('status') || '503'),headers:{'X-Upstream':url.hostname}});
+  }
   if (url.pathname.endsWith('/models')) {
     const valid = url.hostname === 'a.example' ? request.headers.get('Authorization') === 'Bearer upstream-secret-A' : request.headers.get('x-api-key') === 'upstream-secret-B';
     return valid ? Response.json({data:[{id:'test-model'}]}) : new Response('unauthorized', {status:401});
@@ -31,7 +35,7 @@ export default { async fetch(request) {
       controller.enqueue(new TextEncoder().encode('data: {"nested":{"a":1}}\\n\\n'));
       setTimeout(() => {controller.enqueue(new TextEncoder().encode('data: [DONE]\\n\\n'));controller.close();}, 350);
     }});
-    return new Response(stream, {headers:{'Content-Type':'text/event-stream'}});
+    return new Response(stream, {headers:{'Content-Type':'text/event-stream','X-Upstream':url.hostname}});
   }
   if (url.pathname.endsWith('/redirect')) return new Response('keep redirect', {status:307,headers:{Location:'https://never-follow.example/target'}});
   if (url.pathname.endsWith('/error')) return new Response(' {"error":{"nested":[1,2]}} ', {status:429,headers:{'X-Custom':'preserved'}});
@@ -55,7 +59,7 @@ async function proxy(path: string, key = keyA, options: Record<string, any> = {}
 beforeAll(async () => {
   const bundled = await build({ entryPoints: ['src/index.ts'], bundle: true, write: false, format: 'esm', target: 'es2022' });
   mf = new Miniflare({
-    workers: [{ name: 'relay', modules: true, script: bundled.outputFiles[0].text, compatibilityDate: '2026-08-06',
+    workers: [{ name: 'relay', modules: true, script: bundled.outputFiles[0].text, compatibilityDate: '2026-08-06', compatibilityFlags: ['enable_request_signal'],
       d1Databases: { DB: 'integration-db' },
       bindings: { ADMIN_KEY: adminKey, UPSTREAM_KEY_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), CONFIG_CACHE_TTL_SECONDS: '30' },
       outboundService: 'upstream',
@@ -169,12 +173,136 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     });
     expect(failed.status).toBe(403); expect(failed.body).toBe('handshake refused');
   });
-  it('all keys share selection; revocation updates this isolate without affecting other keys', async () => {
+  it('routes bound keys independently with the correct URL and credentials, even without a default', async () => {
+    const pinned = await value(await admin('/keys', 'POST', { name: 'Pinned B', upstreamId: upstreamB }));
+    expect(pinned.upstreamIds).toEqual([upstreamB]); expect(pinned.keyHash).toBeUndefined();
+    const updated = await value(await admin(`/keys/${idA}`, 'PATCH', { upstreamId: upstreamA }));
+    expect(updated.upstreamIds).toEqual([upstreamA]); expect(updated.key).toBeUndefined(); expect(updated.keyHash).toBeUndefined();
+    await value(await admin('/active-upstream', 'PUT', { id: null }));
+    expect((await proxy('/echo', keyB)).status).toBe(409);
+    for (const [token, url, header, credential, removed] of [
+      [keyA, 'https://a.example/gateway/echo', 'authorization', 'Bearer upstream-secret-A', 'x-api-key'],
+      [pinned.key, 'https://b.example/echo', 'x-api-key', 'upstream-secret-B', 'authorization']
+    ]) {
+      const echo = await value(await mf.dispatchFetch(`${origin}/echo`, { headers: { 'x-api-key': token } }));
+      expect(echo.url).toBe(url); expect(echo.headers[header]).toBe(credential); expect(echo.headers[removed]).toBeUndefined();
+    }
+    expect((await value(await admin('/keys'))).find((k: any) => k.id === idA).upstreamIds).toEqual([upstreamA]);
+    const deletion = await admin(`/upstreams/${upstreamA}`, 'DELETE');
+    expect(deletion.status).toBe(409); expect((await deletion.json() as any).error.code).toBe('UPSTREAM_IN_USE');
+    await value(await admin('/active-upstream', 'PUT', { id: upstreamB }));
+    const stream = await proxy('/sse', keyA);
+    expect(stream.headers.get('x-upstream')).toBe('a.example'); await stream.text();
+    const socket = await proxy('/ws', keyA, { headers: { Upgrade: 'websocket' } });
+    expect(socket.headers.get('x-upstream')).toBe('a.example'); socket.webSocket!.accept();
+    await value(await admin(`/keys/${idA}`, 'PATCH', { upstreamId: upstreamB }));
+    expect((await value(await proxy('/echo', keyA))).url).toBe('https://b.example/echo');
+    const message = new Promise(resolve => socket.webSocket!.addEventListener('message', e => resolve(e.data), { once: true }));
+    socket.webSocket!.send('still connected'); expect(await message).toBe('still connected');
+    const closed = new Promise(resolve => socket.webSocket!.addEventListener('close', resolve, { once: true }));
+    socket.webSocket!.close(1000, 'done'); await closed;
+    await value(await admin(`/keys/${idA}`, 'PATCH', { upstreamId: null }));
+    await value(await admin('/active-upstream', 'PUT', { id: upstreamA }));
+    expect((await value(await proxy('/echo', keyA))).url).toBe('https://a.example/gateway/echo');
+    expect((await value(await proxy('/echo', pinned.key))).url).toBe('https://b.example/echo');
+    await value(await admin(`/keys/${pinned.id}`, 'DELETE'));
+    expect((await proxy('/echo', pinned.key)).status).toBe(401);
+    // A binding is the only thing preventing deletion once an upstream is not the default.
+    const disposable = await value(await admin('/upstreams', 'POST', { name: 'Temporary', baseUrl: 'https://temp.example', authType: 'bearer', key: 'test-secret' }));
+    await value(await admin(`/keys/${idA}`, 'PATCH', { upstreamId: disposable.id }));
+    expect((await admin(`/upstreams/${disposable.id}`, 'DELETE')).status).toBe(409);
+    await value(await admin(`/keys/${idA}`, 'PATCH', { upstreamId: null }));
+    expect((await admin(`/upstreams/${disposable.id}`, 'DELETE')).status).toBe(200);
+    await value(await admin('/active-upstream', 'PUT', { id: upstreamB }));
+  });
+  it('rejects invalid bindings and unauthorized changes without altering configuration', async () => {
+    const before = await value(await admin('/config'));
+    const keys = await value(await admin('/keys'));
+    for (const upstreamId of ['', 42, false, {}, [], 'missing']) {
+      const status = upstreamId === 'missing' ? 404 : 400;
+      expect((await admin('/keys', 'POST', { name: 'Invalid', upstreamId })).status).toBe(status);
+      expect((await admin(`/keys/${idA}`, 'PATCH', { upstreamId })).status).toBe(status);
+    }
+    expect((await admin(`/keys/${idA}`, 'PATCH', {})).status).toBe(400);
+    expect((await admin('/keys/missing', 'PATCH', { upstreamId: upstreamA })).status).toBe(404);
+    expect((await admin(`/keys/${idA}`, 'PATCH', { upstreamId: upstreamA }, false)).status).toBe(401);
+    const cross = await mf.dispatchFetch(`${origin}/_relay/api/keys/${idA}`, { method: 'PATCH', headers: { Cookie: cookie, Origin: 'https://evil.example', 'Content-Type': 'application/json' }, body: JSON.stringify({ upstreamId: upstreamA }) });
+    expect(cross.status).toBe(403);
+    expect(await value(await admin('/config'))).toEqual(before);
+    expect(await value(await admin('/keys'))).toEqual(keys);
+  });
+  it('saves ordered routes, fails over HTTP/SSE/WebSocket, and protects every referenced upstream', async () => {
+    const record = await value(await admin('/keys', 'POST', { name: 'Ordered', upstreamIds: [upstreamA, upstreamB] }));
+    expect(record.upstreamIds).toEqual([upstreamA, upstreamB]);
+    expect(record.encryptedKey).toBeUndefined(); expect(record.canReveal).toBe(true);
+    expect((await value(await proxy('/echo', record.key))).url).toBe('https://a.example/gateway/echo');
+    const bytes = Buffer.from([0, 255, 42, 13, 10, 128]);
+    const echo = await value(await proxy('/echo?fail=a.example', record.key, {method:'POST',body:bytes,headers:{'Content-Type':'application/octet-stream'}}));
+    expect(echo.url).toBe('https://b.example/echo?fail=a.example'); expect(echo.bytes).toEqual([...bytes]);
+    expect(echo.headers['x-api-key']).toBe('upstream-secret-B'); expect(echo.headers.authorization).toBeUndefined();
+    const stream = await proxy('/sse?fail=a.example', record.key);
+    expect(stream.headers.get('x-upstream')).toBe('b.example'); expect(await stream.text()).toContain('[DONE]');
+    const ws = await proxy('/ws?fail=a.example', record.key, {headers:{Upgrade:'websocket'}});
+    expect(ws.status).toBe(101); expect(ws.headers.get('x-upstream')).toBe('b.example'); ws.webSocket!.accept();
+    const closed = new Promise(resolve => ws.webSocket!.addEventListener('close', resolve, {once:true}));
+    ws.webSocket!.close(1000, 'done'); await closed;
+    const last = await proxy('/echo?fail=a.example&fail=b.example', record.key);
+    expect(last.status).toBe(503); expect(await last.text()).toBe('failed at b.example');
+    await value(await admin(`/keys/${record.id}`, 'PATCH', {upstreamIds:[upstreamB,upstreamA]}));
+    expect((await value(await proxy('/echo', record.key))).url).toBe('https://b.example/echo');
+    expect((await admin(`/upstreams/${upstreamA}`, 'DELETE')).status).toBe(409);
+    expect((await value(await admin('/keys'))).find((k:any) => k.id === record.id).upstreamIds).toEqual([upstreamB,upstreamA]);
+    const before = await value(await admin('/config'));
+    for (const upstreamIds of [[], [upstreamA,upstreamA], [42], 'a', false, ['missing'], Array(101).fill(upstreamA)]) {
+      const status = Array.isArray(upstreamIds) && upstreamIds[0] === 'missing' ? 404 : 400;
+      expect((await admin('/keys','POST',{name:'invalid',upstreamIds})).status).toBe(status);
+      expect((await admin(`/keys/${record.id}`,'PATCH',{upstreamIds})).status).toBe(status);
+    }
+    expect((await admin(`/keys/${record.id}`,'PATCH',{upstreamId:upstreamA,upstreamIds:[upstreamB]})).status).toBe(400);
+    expect(await value(await admin('/config'))).toEqual(before);
+    await value(await admin(`/keys/${record.id}`, 'DELETE'));
+  });
+  it('reveals the same key only to same-origin admins and never exposes ciphertext or plaintext in lists', async () => {
+    const before = await value(await admin('/config'));
+    for (let i = 0; i < 2; i++) {
+      const response = await admin(`/keys/${idA}/reveal`, 'POST');
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(await value(response)).toEqual({key:keyA});
+    }
+    expect(await value(await admin('/config'))).toEqual(before);
+    const listing = await value(await admin('/keys'));
+    expect(listing[0].canReveal).toBe(true);
+    for (const record of listing) {
+      for (const field of ['key', 'keyHash', 'encryptedKey', 'keyCiphertext', 'keyIv']) expect(record[field]).toBeUndefined();
+    }
+    expect((await admin(`/keys/${idA}/reveal`, 'POST', undefined, false)).status).toBe(401);
+    expect((await admin(`/keys/${idA}/reveal`)).status).toBe(404);
+    expect((await admin('/keys/missing/reveal', 'POST')).status).toBe(404);
+    const cross = await mf.dispatchFetch(`${origin}/_relay/api/keys/${idA}/reveal`, {method:'POST',headers:{Cookie:cookie,Origin:'https://evil.example'}});
+    expect(cross.status).toBe(403);
+    const db = await mf.getD1Database('DB', 'relay');
+    const row = await db.prepare('SELECT config_json FROM config WHERE id=1').first<{config_json:string}>();
+    expect(row!.config_json).not.toContain(keyA);
+    const stored = JSON.parse(row!.config_json);
+    expect(stored.accessKeys.find((k:any) => k.id === idA).encryptedKey.keyCiphertext).toBeTruthy();
+    // A pre-upgrade key has only a digest; its routing still works after upgrade.
+    const legacy = stored.accessKeys.find((k:any) => k.id === idA); delete legacy.encryptedKey;
+    delete legacy.upstreamIds; legacy.upstreamId = upstreamA;
+    await db.prepare('UPDATE config SET config_json=?,version=version+1 WHERE id=1').bind(JSON.stringify(stored)).run();
+    expect((await value(await admin('/keys'))).find((k:any) => k.id === idA)).toMatchObject({canReveal:false,upstreamIds:[upstreamA]});
+    const unavailable = await admin(`/keys/${idA}/reveal`, 'POST');
+    expect(unavailable.status).toBe(409); expect((await unavailable.json() as any).error.code).toBe('KEY_NOT_RECOVERABLE');
+    await value(await admin('/active-upstream','PUT',{id:upstreamB}));
+    expect((await value(await proxy('/echo',keyA))).url).toBe('https://a.example/gateway/echo');
+    await value(await admin(`/keys/${idA}`,'PATCH',{upstreamIds:null}));
+  });
+  it('unbound keys follow the default; revocation updates this isolate without affecting other keys', async () => {
     for (const token of [keyA, keyB]) {
       const echo = await (await proxy('/v1/messages', token)).json() as any;
       expect(echo.url).toBe('https://b.example/v1/messages'); expect(echo.headers['x-api-key']).toBe('upstream-secret-B'); expect(echo.headers.authorization).toBeUndefined();
     }
     await admin(`/keys/${idA}`, 'DELETE'); expect((await proxy('/v1/messages', keyA)).status).toBe(401);
+    expect((await admin(`/keys/${idA}/reveal`, 'POST')).status).toBe(404);
     expect((await proxy('/v1/messages', keyB)).status).toBe(200);
     expect((await admin('/config')).status).toBe(200);
   });
