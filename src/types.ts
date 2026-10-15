@@ -32,6 +32,7 @@ export interface AccessKey {
   // Read-only compatibility with earlier single-upstream configurations.
   upstreamId?: string | null;
   upstreamIds?: string[] | null;
+  failoverEnabled?: boolean;
   encryptedKey?: EncryptedKey;
 }
 export interface Config {

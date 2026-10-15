@@ -50,7 +50,7 @@ describe('management snapshot and write minimization', () => {
     expect(await response.json()).toEqual({
       config: { proxyUrl: origin, activeUpstreamId: 'a', cacheTtlSeconds: 30, upstreamCooldownSeconds: 1800, version: 7 },
       upstreams: ['a', 'b'].map(id => ({ id, name: id, baseUrl: `https://${id}.example/`, authType: 'bearer', hasKey: true, healthRevision: 0, faultUntil: 0, faultReason: null })),
-      keys: [{ id: 'k', name: 'Key', keyPrefix: 'relay_prefix', createdAt: '2026-10-15', upstreamIds: ['a', 'b'], canReveal: true }]
+      keys: [{ id: 'k', name: 'Key', keyPrefix: 'relay_prefix', createdAt: '2026-10-15', upstreamIds: ['a', 'b'], failoverEnabled: true, canReveal: true }]
     });
     expect(read).toHaveBeenCalledTimes(1);
     expect(write).not.toHaveBeenCalled();
@@ -89,6 +89,34 @@ describe('management snapshot and write minimization', () => {
     expect(row.version).toBe(8);
     expect((await getCache(env).get()).config.accessKeys[0].upstreamIds).toEqual(['b', 'a']);
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('toggles failover without changing routes, secrets or shared health and skips unchanged saves', async () => {
+    const config = fixture(); Object.assign(config.upstreams[0], {healthRevision: 3, faultUntil: 9999999999999, faultReason: 'HTTP 503'});
+    const {call, row, write, env} = setup(config);
+    expect(await (await call('/keys/k', 'PATCH', {failoverEnabled:false})).json()).toMatchObject({failoverEnabled:false, upstreamIds:['a','b']});
+    expect(JSON.parse(row.config_json)).toEqual({...config, accessKeys:[{...config.accessKeys[0], failoverEnabled:false}]});
+    expect((await getCache(env).get()).config.accessKeys[0].failoverEnabled).toBe(false);
+    await call('/keys/k', 'PATCH', {failoverEnabled:false}); expect(write).toHaveBeenCalledTimes(1);
+    expect(await (await call('/keys/k', 'PATCH', {failoverEnabled:true})).json()).toMatchObject({failoverEnabled:true});
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(await (await call('/keys/k', 'PATCH', {upstreamIds:['a']})).json()).toMatchObject({failoverEnabled:false});
+    expect(JSON.parse(row.config_json).upstreams).toEqual(config.upstreams);
+  });
+
+  it('validates the flag and requires multiple explicit upstreams before enabling failover', async () => {
+    const {call, write} = setup();
+    for (const failoverEnabled of [null, 'false', 0, [], {}]) {
+      await expect(call('/keys/k', 'PATCH', {failoverEnabled})).rejects.toMatchObject({status:400});
+      await expect(call('/keys', 'POST', {name:'invalid', upstreamIds:['a','b'], failoverEnabled})).rejects.toMatchObject({status:400});
+    }
+    for (const upstreamIds of [null, ['a']]) {
+      await expect(call('/keys/k', 'PATCH', {upstreamIds, failoverEnabled:true})).rejects.toMatchObject({status:400});
+      await expect(call('/keys', 'POST', {name:'invalid', upstreamIds, failoverEnabled:true})).rejects.toMatchObject({status:400});
+    }
+    expect(write).not.toHaveBeenCalled();
+    expect(await (await call('/keys', 'POST', {name:'direct', upstreamIds:['a','b'], failoverEnabled:false})).json())
+      .toMatchObject({upstreamIds:['a','b'], failoverEnabled:false});
   });
 
   it('treats an explicitly supplied upstream secret as a replacement', async () => {

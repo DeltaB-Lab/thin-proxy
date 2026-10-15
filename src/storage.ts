@@ -9,7 +9,7 @@ export function snapshot(version: number, config: Config): Snapshot {
     (config.activeUpstreamId !== null && !config.upstreams.some(u => u.id === config.activeUpstreamId)) ||
     config.accessKeys.some(k => {
       const ids = keyUpstreamIds(k);
-      return ids !== null && (!Array.isArray(ids) || !ids.length || ids.length > 100 ||
+      return (k.failoverEnabled !== undefined && typeof k.failoverEnabled !== 'boolean') || ids !== null && (!Array.isArray(ids) || !ids.length || ids.length > 100 ||
         new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || !config.upstreams.some(u => u.id === id)));
     })) {
     throw new Error('Invalid stored configuration');
