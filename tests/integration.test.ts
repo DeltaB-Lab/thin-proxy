@@ -102,6 +102,27 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     expect((await admin('/active-upstream', 'PUT', { id: upstreamA })).status).toBe(200);
     expect((await admin(`/upstreams/${upstreamA}`, 'DELETE')).status).toBe(409);
   });
+  it('serves a combined management snapshot and leaves D1 unchanged on no-op saves', async () => {
+    expect((await admin('/snapshot', 'GET', undefined, false)).status).toBe(401);
+    const response = await admin('/snapshot');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    const combined = await value(response);
+    expect(combined).toEqual({
+      config: await value(await admin('/config')),
+      upstreams: await value(await admin('/upstreams')),
+      keys: await value(await admin('/keys'))
+    });
+    expect(combined.config.cacheTtlSeconds).toBe(30);
+    const db = await mf.getD1Database('DB', 'relay');
+    const before = await db.prepare('SELECT version, config_json, updated_at FROM config WHERE id=1').first();
+    expect((await admin('/active-upstream', 'PUT', { id: upstreamA })).status).toBe(200);
+    expect((await admin(`/upstreams/${upstreamA}`, 'PATCH', {
+      name: 'A', baseUrl: 'https://a.example/gateway', authType: 'bearer', key: ''
+    })).status).toBe(200);
+    expect((await admin(`/keys/${idA}`, 'PATCH', { upstreamIds: null })).status).toBe(200);
+    expect(await db.prepare('SELECT version, config_json, updated_at FROM config WHERE id=1').first()).toEqual(before);
+    expect(await value(await admin('/snapshot'))).toEqual(combined);
+  });
   it('tests a stored upstream key without changing selection or configuration', async () => {
     const before = await value(await admin('/config'));
     const result = await value(await admin('/test-auth', 'POST', {id:upstreamA,baseUrl:'https://a.example/gateway',key:''}));
@@ -288,6 +309,9 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     // A pre-upgrade key has only a digest; its routing still works after upgrade.
     const legacy = stored.accessKeys.find((k:any) => k.id === idA); delete legacy.encryptedKey;
     delete legacy.upstreamIds; legacy.upstreamId = upstreamA;
+    // The following management save must make a real change to publish this
+    // externally edited fixture; no-op saves no longer refresh proxy caches.
+    stored.activeUpstreamId = null;
     await db.prepare('UPDATE config SET config_json=?,version=version+1 WHERE id=1').bind(JSON.stringify(stored)).run();
     expect((await value(await admin('/keys'))).find((k:any) => k.id === idA)).toMatchObject({canReveal:false,upstreamIds:[upstreamA]});
     const unavailable = await admin(`/keys/${idA}/reveal`, 'POST');

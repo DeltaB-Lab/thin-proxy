@@ -31,6 +31,9 @@ function keyUpstreams(body: Record<string, unknown>, config: Config, creating = 
   return value;
 }
 async function commit(env: Env, before: Snapshot, config: Config): Promise<void> {
+  // A no-op is satisfied by the fresh management read. Do not write a new
+  // version or extend the proxy cache's TTL when nothing changed.
+  if (JSON.stringify(before.config) === JSON.stringify(config)) return;
   const started = Date.now();
   const next = await writeConfig(env, before.version, config);
   getCache(env).publish(next, started);
@@ -54,16 +57,22 @@ export async function admin(request: Request, env: Env): Promise<Response> {
     response.headers.set('Set-Cookie', sessionCookie('', true));
     return response;
   }
-  if (method === 'GET' && ['/config', '/upstreams', '/keys'].includes(path)) {
+  if (method === 'GET' && ['/snapshot', '/config', '/upstreams', '/keys'].includes(path)) {
     const state = await readConfig(env); // Management never reads the proxy cache.
     if (path === '/upstreams') return json(state.config.upstreams.map(publicUpstream));
     if (path === '/keys') return json(state.config.accessKeys.map(publicKey));
-    return json({
+    const config = {
       proxyUrl: new URL(request.url).origin,
       activeUpstreamId: state.config.activeUpstreamId,
       cacheTtlSeconds: Number(env.CONFIG_CACHE_TTL_SECONDS ?? '30'),
       version: state.version
+    };
+    if (path === '/snapshot') return json({
+      config,
+      upstreams: state.config.upstreams.map(publicUpstream),
+      keys: state.config.accessKeys.map(publicKey)
     });
+    return json(config);
   }
   if (path === '/test-auth' && method === 'POST') {
     const body = await managementBody(request);
@@ -143,8 +152,13 @@ export async function admin(request: Request, env: Env): Promise<Response> {
     if (!record) throw notFound();
     if (method === 'DELETE') config.accessKeys = config.accessKeys.filter(k => k.id !== record.id);
     else {
-      record.upstreamIds = keyUpstreams(body, config);
-      delete record.upstreamId;
+      const ids = keyUpstreams(body, config);
+      // Preserve an unchanged legacy representation rather than writing only
+      // to normalize it. List order is significant for upstream failover.
+      if (JSON.stringify(keyUpstreamIds(record)) !== JSON.stringify(ids)) {
+        record.upstreamIds = ids;
+        delete record.upstreamId;
+      }
       result = publicKey(record);
     }
   }
