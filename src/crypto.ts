@@ -1,4 +1,4 @@
-import type { Env, Upstream } from './types';
+import type { EncryptedKey, Env, Upstream } from './types';
 const encoder = new TextEncoder();
 export function base64(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes));
@@ -30,21 +30,25 @@ async function encryptionKey(env: Env): Promise<CryptoKey> {
   if (raw.length !== 32) throw new Error('Invalid encryption configuration');
   return crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
-export async function encryptKey(env: Env, id: string, value: string) {
+async function encryptValue(env: Env, purpose: string, id: string, value: string): Promise<EncryptedKey> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt({
-    name: 'AES-GCM', iv, additionalData: encoder.encode(`worker-relay/upstream/v1:${id}`)
+    name: 'AES-GCM', iv, additionalData: encoder.encode(`worker-relay/${purpose}/v1:${id}`)
   }, await encryptionKey(env), encoder.encode(value));
   return { keyIv: base64(iv), keyCiphertext: base64(new Uint8Array(ciphertext)), keyVersion: 1 };
 }
-export async function decryptKey(env: Env, upstream: Upstream): Promise<string> {
-  if (upstream.keyVersion !== 1) throw new Error('Unsupported key version');
+async function decryptValue(env: Env, purpose: string, id: string, encrypted: EncryptedKey): Promise<string> {
+  if (encrypted.keyVersion !== 1) throw new Error('Unsupported key version');
   const plaintext = await crypto.subtle.decrypt({
-    name: 'AES-GCM', iv: unbase64(upstream.keyIv),
-    additionalData: encoder.encode(`worker-relay/upstream/v1:${upstream.id}`)
-  }, await encryptionKey(env), unbase64(upstream.keyCiphertext));
+    name: 'AES-GCM', iv: unbase64(encrypted.keyIv),
+    additionalData: encoder.encode(`worker-relay/${purpose}/v1:${id}`)
+  }, await encryptionKey(env), unbase64(encrypted.keyCiphertext));
   return new TextDecoder().decode(plaintext);
 }
+export const encryptKey = (env: Env, id: string, value: string) => encryptValue(env, 'upstream', id, value);
+export const decryptKey = (env: Env, upstream: Upstream) => decryptValue(env, 'upstream', upstream.id, upstream);
+export const encryptAccessKey = (env: Env, id: string, value: string) => encryptValue(env, 'access-key', id, value);
+export const decryptAccessKey = (env: Env, id: string, encrypted: EncryptedKey) => decryptValue(env, 'access-key', id, encrypted);
 export async function signingKey(secret: string): Promise<CryptoKey> {
   if (!secret || secret.length < 32) throw new Error('Invalid admin configuration');
   const material = await crypto.subtle.importKey('raw', encoder.encode(secret), 'HKDF', false, ['deriveKey']);
