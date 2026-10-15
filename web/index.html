@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>thin-proxy</title>
+  <title>THIN-PROXY</title>
   <link rel="icon" href="/_relay/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/_relay/style.css">
   <script type="module" src="/_relay/app.js"></script>
@@ -11,29 +11,29 @@
 <body class="auth-mode">
   <svg class="icon-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><symbol id="i-logo" viewBox="0 0 24 24"><path d="m12 2 9 5v10l-9 5-9-5V7Z M3 7l9 5 9-5 M12 12v10 M7.5 4.5l9 5v5"/></symbol><symbol id="i-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v11h-6v-7H9v7H3Z"/></symbol><symbol id="i-route" viewBox="0 0 24 24"><circle cx="5" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M5 7v8a4 4 0 0 0 4 4h8 M19 3v8 M15 7l4 4 4-4"/></symbol><symbol id="i-key" viewBox="0 0 24 24"><path d="M14 14a6 6 0 1 0-4-4L2 18v4h4v-3h3v-3Z"/><circle cx="16" cy="8" r="1"/></symbol><symbol id="i-out" viewBox="0 0 24 24"><path d="M9 4H4v16h5 M10 12h11 M17 8l4 4-4 4"/></symbol><symbol id="i-link" viewBox="0 0 24 24"><path d="M14 3h7v7 M21 3 10 14 M10 5H4v15h15v-6"/></symbol></svg>
   <aside id="sidebar" hidden>
-    <a class="brand" href="#home"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>thin-proxy</span></a>
+    <a class="brand" href="#home"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>THIN-PROXY</span></a>
     <nav aria-label="导航">
       <a href="#home" class="nav-item" data-view="home"><svg aria-hidden="true"><use href="#i-home"/></svg>首页</a>
       <a href="#upstreams" class="nav-item" data-view="upstreams"><svg aria-hidden="true"><use href="#i-route"/></svg>上游</a>
-      <a href="#keys" class="nav-item" data-view="keys"><svg aria-hidden="true"><use href="#i-key"/></svg>API Keys</a>
+      <a href="#keys" class="nav-item" data-view="keys"><svg aria-hidden="true"><use href="#i-key"/></svg>API KEYS</a>
     </nav>
     <div class="sidebar-bottom"><a class="nav-item" href="https://github.com/DeltaB-Lab/thin-proxy" target="_blank" rel="noopener noreferrer"><svg aria-hidden="true"><use href="#i-link"/></svg>GitHub</a><button id="logout" class="nav-item" hidden><svg aria-hidden="true"><use href="#i-out"/></svg>退出登录</button></div>
   </aside>
   <main>
     <p id="notice" role="status" aria-live="polite" hidden></p>
     <section id="login-view" class="login" hidden>
-      <div class="login-brand"><svg aria-hidden="true"><use href="#i-logo"/></svg><h1>thin-proxy</h1></div>
+      <div class="login-brand"><svg aria-hidden="true"><use href="#i-logo"/></svg><h1>THIN-PROXY</h1></div>
       <form id="login-form"><label for="admin-key" class="sr-only">密钥</label><input id="admin-key" name="key" type="password" autocomplete="current-password" required maxlength="1024" placeholder="输入密钥"><button type="submit">登录 <span aria-hidden="true">→</span></button></form>
     </section>
     <div id="dashboard" hidden>
-      <header class="topbar"><span id="page-title">首页</span><span class="topbar-brand">thin-proxy</span></header>
+      <header class="topbar"><span id="page-title">首页</span><span class="topbar-brand">THIN-PROXY</span></header>
       <div id="home-panel">
-        <section class="hero"><div><span class="hero-index">01 / CONSOLE</span><h1>thin-proxy</h1><a href="#upstreams" class="hero-link">管理上游 <span aria-hidden="true">↗</span></a></div><div class="routing-art" aria-hidden="true"><svg viewBox="0 0 560 200" fill="none"><defs><pattern id="dots" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".7" fill="#d6d6dc"/></pattern></defs><rect width="560" height="200" fill="url(#dots)"/><path d="M0 100H180 M270 100H560 M270 100C340 100 320 35 390 35H560 M270 100C340 100 320 165 390 165H560" stroke="#c4c5cd"/><path d="M0 100H180 M270 100H560" stroke="#626d9b" stroke-width="1.3"/><rect x="180" y="56" width="90" height="90" rx="1" fill="#f8f8fa" stroke="#9b9eac"/><path d="m225 75 25 14v28l-25 14-25-14V89Z M200 89l25 14 25-14 M225 103v28 M213 82l25 14v13" stroke="#363c55" stroke-width="1.2"/><circle cx="90" cy="100" r="4" fill="#fff" stroke="#626d9b"/><circle cx="420" cy="100" r="4" fill="#fff" stroke="#626d9b"/><path d="m504 96 4 4-4 4" stroke="#626d9b"/><path d="M180 43v-9h9 M270 43v-9h-9 M180 159v9h9 M270 159v9h-9" stroke="#c7c8ce"/></svg></div></section>
+        <section class="hero"><div><span class="hero-index">01 / CONSOLE</span><h1>THIN-PROXY</h1><a href="#upstreams" class="hero-link">管理上游 <span aria-hidden="true">↗</span></a></div><div class="routing-art" aria-hidden="true"><svg viewBox="0 0 560 200" fill="none"><defs><pattern id="dots" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".7" fill="#d6d6dc"/></pattern></defs><rect width="560" height="200" fill="url(#dots)"/><path d="M0 100H180 M270 100H560 M270 100C340 100 320 35 390 35H560 M270 100C340 100 320 165 390 165H560" stroke="#c4c5cd"/><path d="M0 100H180 M270 100H560" stroke="#626d9b" stroke-width="1.3"/><rect x="180" y="56" width="90" height="90" rx="1" fill="#f8f8fa" stroke="#9b9eac"/><path d="m225 75 25 14v28l-25 14-25-14V89Z M200 89l25 14 25-14 M225 103v28 M213 82l25 14v13" stroke="#363c55" stroke-width="1.2"/><circle cx="90" cy="100" r="4" fill="#fff" stroke="#626d9b"/><circle cx="420" cy="100" r="4" fill="#fff" stroke="#626d9b"/><path d="m504 96 4 4-4 4" stroke="#626d9b"/><path d="M180 43v-9h9 M270 43v-9h-9 M180 159v9h9 M270 159v9h-9" stroke="#c7c8ce"/></svg></div></section>
         <section class="summary"><div class="endpoint"><span class="eyebrow">代理地址</span><div class="address"><code id="proxy-url"></code><button id="copy-url" class="quiet small">复制</button></div></div><div class="current"><span class="eyebrow">当前上游</span><strong id="current-upstream">未选择</strong></div></section>
       </div>
       <div class="content">
         <section id="upstreams-section" class="section"><div class="section-heading"><h2>上游 <span id="upstream-count" class="count">0</span></h2><button id="add-upstream">＋ 添加上游</button></div><div id="upstream-list" class="upstream-grid"></div></section>
-        <section id="keys-section" class="section"><div class="section-heading"><h2>API Keys <span id="key-count" class="count">0</span></h2><button id="add-key" class="secondary">＋ 创建 Key</button></div><div id="key-list" class="key-list"></div></section>
+        <section id="keys-section" class="section"><div class="section-heading"><h2>API KEYS <span id="key-count" class="count">0</span></h2><button id="add-key" class="secondary">＋ 创建 Key</button></div><div id="key-list" class="key-list"></div></section>
         <details id="usage" class="usage"><summary>接入方式</summary><div class="usage-content"><p>Base URL 使用代理地址，API Key 使用这里创建的 Key。</p><p>客户端要求 /v1 时，将它加在代理地址后。切换上游和撤销 Key 可能延迟 <span id="ttl-note">30</span> 秒生效。</p></div></details>
       </div>
     </div>
