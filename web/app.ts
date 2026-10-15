@@ -1,5 +1,5 @@
 interface Upstream { id: string; name: string; baseUrl: string; authType: string; faultUntil: number; faultReason: string | null }
-interface KeyInfo { id: string; name: string; keyPrefix: string; createdAt: string; upstreamIds: string[] | null; canReveal: boolean }
+interface KeyInfo { id: string; name: string; keyPrefix: string; createdAt: string; upstreamIds: string[] | null; failoverEnabled: boolean; canReveal: boolean }
 interface Settings { proxyUrl: string; activeUpstreamId: string | null; cacheTtlSeconds: number; upstreamCooldownSeconds: number }
 interface ManagementSnapshot { config: Settings; upstreams: Upstream[]; keys: KeyInfo[] }
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -81,13 +81,21 @@ function editKey(key?: KeyInfo) {
   mode.options[0].textContent = `跟随默认上游（${defaultName}）`;
   mode.value = key?.upstreamIds ? 'ordered' : 'default';
   keyRoutes = [...(key?.upstreamIds ?? [])];
+  $<HTMLInputElement>('key-failover-enabled').checked = key?.failoverEnabled ?? false;
   renderKeyRoutes();
   $('key-title').textContent = key ? '编辑 Key' : '创建 Key';
   $('key-submit').textContent = key ? '保存' : '创建';
   $<HTMLDialogElement>('key-dialog').showModal();
 }
 function renderKeyRoutes() {
-  $('key-route-editor').hidden = $<HTMLSelectElement>('key-route-mode').value !== 'ordered';
+  const ordered = $<HTMLSelectElement>('key-route-mode').value === 'ordered';
+  $('key-route-editor').hidden = !ordered;
+  const failover = $<HTMLInputElement>('key-failover-enabled');
+  failover.disabled = !ordered || keyRoutes.length < 2;
+  if (failover.disabled) failover.checked = false;
+  $('key-route-hint').textContent = !ordered ? '跟随默认上游，直接转发，不读取或记录故障状态。'
+    : failover.checked ? '按顺序跳过故障上游；本次失败直接返回，下次请求再选择上游。'
+    : '仅直连列表第一项，不读取或记录故障状态。选择至少两个上游后可启用故障转移；关闭时保留列表。';
   const list = $('key-route-list'); list.replaceChildren();
   if (!keyRoutes.length) list.append(node('p', '请选择至少一个上游。', 'hint'));
   keyRoutes.forEach((id, index) => {
@@ -134,8 +142,8 @@ async function refresh() {
     const cooling = u.faultUntil > Date.now();
     const reason = u.faultReason === 'timeout' ? '响应超时' : u.faultReason === 'connection' ? '连接失败' : u.faultReason ?? '上游故障';
     card.append(node('p', cooling
-      ? `冷却中 · ${reason} · ${new Date(u.faultUntil).toLocaleString()} 后可重试`
-      : u.faultUntil ? '冷却已到期，可重新尝试' : '未标记故障', 'hint'));
+      ? `故障转移：冷却中 · ${reason} · ${new Date(u.faultUntil).toLocaleString()} 后可重试`
+      : u.faultUntil ? '故障转移：冷却已到期，可重新尝试' : '故障转移：未标记故障', 'hint'));
     const actions = node('div', undefined, 'actions');
     actions.append(button('清除故障状态', 'quiet small', () => void action(async () => {
       await api(`/upstreams/${u.id}/clear-fault`, 'POST'); await refresh();
@@ -161,7 +169,7 @@ async function refresh() {
       const routes = node('ol', undefined, 'key-route-summary');
       for (const id of key.upstreamIds) routes.append(node('li', list.find(u => u.id === id)?.name ?? '上游不可用'));
       info.append(routes);
-      if (key.upstreamIds.length > 1) info.append(node('p', '按顺序优先 · 失败冷却'));
+      info.append(node('p', key.failoverEnabled ? '故障转移已启用 · 按顺序避让故障上游' : '故障转移已关闭 · 仅直连第一项'));
     } else info.append(node('p', `跟随默认上游：${list.find(u => u.id === settings.activeUpstreamId)?.name ?? '未选择'}`));
     const actions = node('div', undefined, 'actions');
     if (key.canReveal) {
@@ -189,6 +197,7 @@ $('logout').addEventListener('click', () => void action(async () => { await api(
 $('add-upstream').addEventListener('click', () => editUpstream());
 $('add-key').addEventListener('click', () => editKey());
 $('key-route-mode').addEventListener('change', renderKeyRoutes);
+$('key-failover-enabled').addEventListener('change', renderKeyRoutes);
 $('add-key-route').addEventListener('click', () => {
   const id = $<HTMLSelectElement>('key-upstream-add').value;
   if (id && !keyRoutes.includes(id)) { keyRoutes.push(id); renderKeyRoutes(); }
@@ -229,11 +238,12 @@ $<HTMLFormElement>('key-form').addEventListener('submit', e => { e.preventDefaul
   const data = Object.fromEntries(new FormData($<HTMLFormElement>('key-form')));
   const upstreamIds = data.routeMode === 'ordered' ? [...keyRoutes] : null;
   if (upstreamIds && !upstreamIds.length) throw new Error('请选择至少一个上游，或改为跟随默认上游');
+  const failoverEnabled = !!upstreamIds && $<HTMLInputElement>('key-failover-enabled').checked;
   if (data.id) {
-    await api(`/keys/${data.id}`, 'PATCH', { name: data.name, upstreamIds });
+    await api(`/keys/${data.id}`, 'PATCH', { name: data.name, upstreamIds, failoverEnabled });
     $<HTMLDialogElement>('key-dialog').close(); await refresh(); saved(); return;
   }
-  const result = await api<{ key: string }>('/keys', 'POST', { name: data.name, upstreamIds });
+  const result = await api<{ key: string }>('/keys', 'POST', { name: data.name, upstreamIds, failoverEnabled });
   $<HTMLDialogElement>('key-dialog').close();
   showKey(result.key, 'Key 已创建');
   await refresh(); saved();

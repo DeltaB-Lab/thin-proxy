@@ -27,7 +27,7 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   env.DB = {} as D1Database;
-  state = snapshot(1, { activeUpstreamId: 'c', upstreams, accessKeys: [{ id: 'key', name: 'test', keyPrefix: 'relay_a', createdAt: '', keyHash, upstreamIds: ['a','b','c'] }] });
+  state = snapshot(1, { activeUpstreamId: 'c', upstreams, accessKeys: [{ id: 'key', name: 'test', keyPrefix: 'relay_a', createdAt: '', keyHash, upstreamIds: ['a','b','c'], failoverEnabled: true }] });
   vi.mocked(getCache).mockReturnValue({ get: async () => state } as ConfigCache);
   vi.mocked(recordUpstreamFault).mockReset().mockResolvedValue(null);
   fetchMock.mockReset(); vi.stubGlobal('fetch', fetchMock);
@@ -35,6 +35,57 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('ordered upstream cooldown', () => {
+  it.each(['single', 'legacy', 'default', 'disabled-multi'] as const)('bypasses persisted faults and never reports direct-route failures: %s', async mode => {
+    const key = state.config.accessKeys[0];
+    state.config.activeUpstreamId = 'a';
+    if (mode === 'legacy') { delete key.upstreamIds; key.upstreamId = 'a'; }
+    else key.upstreamIds = mode === 'single' ? ['a'] : mode === 'disabled-multi' ? ['a','b','c'] : null;
+    if (mode === 'disabled-multi') key.failoverEnabled = false;
+    state.config.upstreams = upstreams.map(u => ({...u, healthRevision: 4, faultUntil: Date.now() + 1_800_000, faultReason: 'HTTP 503'}));
+    const before = structuredClone(state.config);
+    const waitUntil = vi.fn();
+    const response = new Response('original failure', {status:503, headers:{'Retry-After':'7'}});
+    fetchMock.mockResolvedValueOnce(response).mockRejectedValueOnce(new Error('connection refused'))
+      .mockImplementationOnce((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener('abort', () => reject(new Error('aborted')), {once:true});
+      })).mockResolvedValueOnce(new Response('ok'));
+    // Cooldown configuration is irrelevant to direct routes, including legacy/default bindings.
+    const directEnv = {...env, UPSTREAM_COOLDOWN_SECONDS:'unused', UPSTREAM_TIMEOUT_SECONDS:'0.01'};
+    expect(await proxy(request(), directEnv, {waitUntil})).toBe(response);
+    await expect(proxy(request(), directEnv, {waitUntil})).rejects.toMatchObject({status:502, code:'UPSTREAM_UNAVAILABLE'});
+    await expect(proxy(request(), directEnv, {waitUntil})).rejects.toMatchObject({status:504, code:'UPSTREAM_TIMEOUT'});
+    expect(await (await proxy(request(), directEnv, {waitUntil})).text()).toBe('ok');
+    expect(fetchMock.mock.calls.map(call => new URL(call[0]).hostname)).toEqual(['a.example','a.example','a.example','a.example']);
+    expect(recordUpstreamFault).not.toHaveBeenCalled(); expect(waitUntil).not.toHaveBeenCalled();
+    expect(state.config).toEqual(before);
+  });
+  it('preserves failover for older multi-upstream records without the new flag', async () => {
+    delete state.config.accessKeys[0].failoverEnabled;
+    fetchMock.mockResolvedValueOnce(new Response('failed', {status:503})).mockResolvedValueOnce(new Response('backup'));
+    await proxy(request(), env); await proxy(request(), env);
+    expect(fetchMock.mock.calls.map(call => new URL(call[0]).hostname)).toEqual(['a.example','b.example']);
+    expect(recordUpstreamFault).toHaveBeenCalledTimes(1);
+  });
+  it('isolates direct requests from local failover health on the same upstream', async () => {
+    const orderedKey = state.config.accessKeys[0];
+    const directToken = `relay_${'b'.repeat(43)}`;
+    const directHash = await hash(directToken);
+    const directKey = {...orderedKey, id:'direct', keyHash:directHash, upstreamIds:['a']};
+    state.config.accessKeys.push(directKey); state.keysByHash.set(directHash, directKey);
+    const directRequest = () => request({headers:{Authorization:`Bearer ${directToken}`}});
+    fetchMock.mockResolvedValueOnce(new Response('direct failure', {status:503})).mockResolvedValueOnce(new Response('ok'))
+      .mockResolvedValueOnce(new Response('failover failure', {status:503})).mockResolvedValueOnce(new Response('direct success'))
+      .mockResolvedValueOnce(new Response('direct failure', {status:429})).mockResolvedValueOnce(new Response('backup'));
+    await proxy(directRequest(), env);
+    await proxy(request(), env); // A direct failure must not make failover skip A.
+    expect(recordUpstreamFault).not.toHaveBeenCalled();
+    await proxy(request(), env); // The failover request now marks A locally.
+    await proxy(directRequest(), env); // Direct success must not clear that mark.
+    await proxy(directRequest(), env); // Direct failure must not report or extend it.
+    expect(await (await proxy(request(), env)).text()).toBe('backup');
+    expect(fetchMock.mock.calls.map(call => new URL(call[0]).hostname)).toEqual(['a.example','a.example','a.example','a.example','a.example','b.example']);
+    expect(recordUpstreamFault).toHaveBeenCalledTimes(1);
+  });
   it('coalesces concurrent failure reports and silently ignores zero matched rows', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     const pending: Array<(response: Response) => void> = [];

@@ -3,7 +3,7 @@ import { getCache } from './cache';
 import { decryptKey, hash } from './crypto';
 import { HttpError } from './errors';
 import { recordUpstreamFault } from './storage';
-import { keyUpstreamIds } from './key-routing';
+import { keyFailoverEnabled, keyUpstreamIds } from './key-routing';
 import { getUpstreamHealth, upstreamCooldownSeconds } from './upstream-health';
 import { isSelf } from './validation';
 import type { Env } from './types';
@@ -44,13 +44,17 @@ export async function proxy(request: Request, env: Env, context?: Pick<Execution
   if (!ids.length) throw new HttpError(409, 'NO_ACTIVE_UPSTREAM', '请为此 Key 指定上游或选择默认上游');
   const timeoutSeconds = Number(env.UPSTREAM_TIMEOUT_SECONDS ?? '30');
   if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds > 300) throw new Error('Invalid upstream timeout');
-  const cooldownMs = upstreamCooldownSeconds(env) * 1000;
+  const failover = keyFailoverEnabled(accessKey);
+  const cooldownMs = failover ? upstreamCooldownSeconds(env) * 1000 : 0;
   const upgrade = request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
   requireConnected(request.signal);
-  const attempt = getUpstreamHealth(env).select(state, ids, cooldownMs, timeoutSeconds * 1000);
+  // Direct routes neither consult nor update shared failover health.
+  const attempt = failover ? getUpstreamHealth(env).select(state, ids, cooldownMs, timeoutSeconds * 1000) : undefined;
+  const upstream = attempt?.upstream ?? state.config.upstreams.find(item => item.id === ids[0]);
+  if (!upstream) throw new HttpError(503, 'CONFIG_UNAVAILABLE', 'Key 指定的上游不存在');
   const fail = async (reason: string) => {
-    if (!attempt.finish('failed')) return;
+    if (!attempt?.finish('failed')) return;
     const started = Date.now();
     const persist = (async () => {
       try {
@@ -68,7 +72,6 @@ export async function proxy(request: Request, env: Env, context?: Pick<Execution
     else await persist;
   };
   try {
-    const { upstream } = attempt;
     const target = targetUrl(upstream.baseUrl, new URL(request.url));
     if (isSelf(target.hostname, request, env)) throw new HttpError(502, 'PROXY_LOOP', '上游不能指向代理自身');
     const key = await decryptKey(env, upstream);
@@ -98,11 +101,11 @@ export async function proxy(request: Request, env: Env, context?: Pick<Execution
     }
     const failed = [401, 403, 408, 429].includes(response.status) || (response.status >= 500 && response.status <= 599);
     if (failed) await fail(`HTTP ${response.status}`);
-    else attempt.finish('healthy');
+    else attempt?.finish('healthy');
     // Return even failed responses untouched. Only a later client request can use another upstream.
     return response;
   } finally {
     // Release a probe after cancellation or local configuration/decryption errors, without penalizing the upstream.
-    attempt.finish('cancelled');
+    attempt?.finish('cancelled');
   }
 }

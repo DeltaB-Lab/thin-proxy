@@ -3,7 +3,7 @@ import { issueSession, requireOrigin, requireSession, sessionCookie } from './au
 import { getCache } from './cache';
 import { decryptAccessKey, decryptKey, encryptAccessKey, encryptKey, hash, randomAccessKey, sameSecret } from './crypto';
 import { HttpError, json } from './errors';
-import { keyUpstreamIds } from './key-routing';
+import { keyFailoverEnabled, keyUpstreamIds } from './key-routing';
 import { clearUpstreamFault, readConfig, writeConfig } from './storage';
 import { getUpstreamHealth, upstreamCooldownSeconds } from './upstream-health';
 import { authType, baseUrl, field, invalid, managementBody, upstreamKey } from './validation';
@@ -14,7 +14,7 @@ const publicUpstream = (u: Config['upstreams'][number]) => ({ id: u.id, name: u.
   healthRevision: u.healthRevision ?? 0, faultUntil: u.faultUntil ?? 0, faultReason: u.faultReason ?? null });
 const publicKey = (key: AccessKey) => ({
   id: key.id, name: key.name, keyPrefix: key.keyPrefix, createdAt: key.createdAt,
-  upstreamIds: keyUpstreamIds(key), canReveal: !!key.encryptedKey
+  upstreamIds: keyUpstreamIds(key), failoverEnabled: keyFailoverEnabled(key), canReveal: !!key.encryptedKey
 });
 function keyUpstreams(body: Record<string, unknown>, config: Config, creating = false): string[] | null {
   if (body.upstreamIds !== undefined && body.upstreamId !== undefined) invalid('不能同时提供 upstreamIds 和 upstreamId');
@@ -30,6 +30,11 @@ function keyUpstreams(body: Record<string, unknown>, config: Config, creating = 
     invalid('请选择 1–100 个不重复的上游，或使用 null 跟随默认上游');
   }
   if (value.some(id => !config.upstreams.some(u => u.id === id))) throw new HttpError(404, 'UPSTREAM_NOT_FOUND', '所选上游不存在，请刷新后重试');
+  return value;
+}
+function keyFailover(value: unknown, ids: string[] | null): boolean {
+  if (typeof value !== 'boolean') invalid('故障转移开关必须为布尔值');
+  if (value && (ids?.length ?? 0) < 2) invalid('启用故障转移需要至少两个指定上游');
   return value;
 }
 async function commit(env: Env, before: Snapshot, config: Config): Promise<void> {
@@ -155,12 +160,13 @@ export async function admin(request: Request, env: Env): Promise<Response> {
   } else if (path === '/keys') {
     if (config.accessKeys.length >= 100) invalid('最多保存 100 个转发 Key');
     const upstreamIds = keyUpstreams(body, config, true);
+    const failoverEnabled = keyFailover(body.failoverEnabled === undefined ? (upstreamIds?.length ?? 0) > 1 : body.failoverEnabled, upstreamIds);
     const key = randomAccessKey();
     const keyHash = await hash(key);
     if (config.accessKeys.some(k => k.keyHash === keyHash)) throw new Error('Key collision');
     const id = crypto.randomUUID();
     const record = { id, name: field(body.name, '名称'), keyHash, keyPrefix: key.slice(0, 14), createdAt: new Date().toISOString(),
-      upstreamIds, encryptedKey: await encryptAccessKey(env, id, key) };
+      upstreamIds, failoverEnabled, encryptedKey: await encryptAccessKey(env, id, key) };
     config.accessKeys.push(record);
     result = { ...publicKey(record), key };
     status = 201;
@@ -170,7 +176,7 @@ export async function admin(request: Request, env: Env): Promise<Response> {
     if (method === 'DELETE') config.accessKeys = config.accessKeys.filter(k => k.id !== record.id);
     else {
       const changesRoutes = body.upstreamIds !== undefined || body.upstreamId !== undefined;
-      if (body.name === undefined && !changesRoutes) invalid('请提供名称或上游配置');
+      if (body.name === undefined && !changesRoutes && body.failoverEnabled === undefined) invalid('请提供名称、上游配置或故障转移开关');
       if (body.name !== undefined) record.name = field(body.name, '名称');
       if (changesRoutes) {
         const ids = keyUpstreams(body, config);
@@ -180,6 +186,8 @@ export async function admin(request: Request, env: Env): Promise<Response> {
           delete record.upstreamId;
         }
       }
+      if (body.failoverEnabled !== undefined) record.failoverEnabled = keyFailover(body.failoverEnabled, keyUpstreamIds(record));
+      else if (changesRoutes && record.failoverEnabled && (keyUpstreamIds(record)?.length ?? 0) < 2) record.failoverEnabled = false;
       result = publicKey(record);
     }
   }

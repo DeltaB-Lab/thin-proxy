@@ -40,4 +40,8 @@ describe('key routing snapshots', () => {
     const data = config(); data.accessKeys[0].upstreamIds = upstreamIds as string[];
     expect(() => snapshot(1, data)).toThrow('Invalid stored configuration');
   });
+  it.each([null, 'false', 0])('rejects malformed persisted failover flags: %j', failoverEnabled => {
+    const data = config(); data.accessKeys[0].failoverEnabled = failoverEnabled as unknown as boolean;
+    expect(() => snapshot(1, data)).toThrow('Invalid stored configuration');
+  });
 });

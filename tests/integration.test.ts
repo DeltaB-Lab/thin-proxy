@@ -170,12 +170,12 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     expect(echo.headers['x-business']).toBe('keep'); expect(echo.headers.cookie.trim()).toBe('business=keep');
   });
   it('preserves upstream errors and never follows redirects', async () => {
+    const before = await value(await admin('/snapshot'));
     const redirect = await proxy('/redirect'); expect(redirect.status).toBe(307); expect(await redirect.text()).toBe('keep redirect');
     const error = await proxy('/error'); expect(error.status).toBe(429); expect(error.headers.get('x-custom')).toBe('preserved');
     expect(await error.text()).toBe(' {"error":{"nested":[1,2]}} ');
-    await waitForFault(upstreamA);
-    // Updating credentials resets health for the shared fixture.
-    await value(await admin(`/upstreams/${upstreamA}`, 'PATCH', {key:'upstream-secret-A'}));
+    expect((await proxy('/error')).status).toBe(429);
+    expect(await value(await admin('/snapshot'))).toEqual(before);
   });
   it('streams SSE before the upstream closes and preserves event bytes', async () => {
     const response = await proxy('/sse'); expect(response.headers.get('content-type')).toContain('text/event-stream');
@@ -211,8 +211,8 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
       req.on('error', reject); req.end();
     });
     expect(failed.status).toBe(403); expect(failed.body).toBe('handshake refused');
-    await waitForFault(upstreamB);
-    await value(await admin(`/upstreams/${upstreamB}`, 'PATCH', {key:'upstream-secret-B'}));
+    expect((await value(await proxy('/echo', keyB))).url).toBe('https://b.example/echo');
+    expect((await value(await admin('/upstreams'))).find((u:any) => u.id === upstreamB).faultUntil).toBe(0);
   });
   it('routes bound keys independently with the correct URL and credentials, even without a default', async () => {
     const pinned = await value(await admin('/keys', 'POST', { name: 'Pinned B', upstreamId: upstreamB }));
@@ -407,6 +407,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     finally { await db.prepare('ALTER TABLE config_offline RENAME TO config').run(); }
   });
   it('persists faults and lets only same-origin admins clear them, including already clear states', async () => {
+    const ordered = await value(await admin('/keys', 'POST', {name:'Recovery', upstreamIds:[upstreamB, upstreamA]}));
     const path = `/upstreams/${upstreamB}/clear-fault`;
     expect((await admin(path, 'POST', undefined, false)).status).toBe(401);
     expect((await mf.dispatchFetch(origin + '/_relay/api' + path, {
@@ -414,20 +415,32 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     })).status).toBe(403);
     expect((await admin(path)).status).toBe(404);
     expect((await admin('/upstreams/missing/clear-fault', 'POST')).status).toBe(404);
-    const failed = await proxy('/echo?fail=b.example', keyB);
+    const failed = await proxy('/echo?fail=b.example', ordered.key);
     expect(failed.status).toBe(503); expect(await failed.text()).toBe('failed at b.example');
     const findB = async () => (await value(await admin('/upstreams'))).find((u:any) => u.id === upstreamB);
     await expect.poll(async () => (await findB()).faultUntil).toBeGreaterThan(Date.now());
     const marked = await findB();
     expect(marked.faultUntil - Date.now()).toBeGreaterThan(1_798_000);
     expect(marked.faultReason).toBe('HTTP 503');
-    expect((await proxy('/echo', keyB)).status).toBe(503);
+    expect((await value(await proxy('/echo', ordered.key))).url).toBe('https://a.example/gateway/echo');
+    // The default route bypasses shared faults without clearing or extending them.
+    expect((await value(await proxy('/echo', keyB))).url).toBe('https://b.example/echo');
+    expect(await (await proxy('/echo?fail=b.example', keyB)).text()).toBe('failed at b.example');
+    expect(await findB()).toEqual(marked);
+    expect(await value(await admin(`/keys/${ordered.id}`, 'PATCH', {failoverEnabled:false})))
+      .toMatchObject({upstreamIds:[upstreamB, upstreamA], failoverEnabled:false});
+    expect((await value(await proxy('/echo', ordered.key))).url).toBe('https://b.example/echo');
+    expect(await (await proxy('/echo?fail=b.example', ordered.key)).text()).toBe('failed at b.example');
+    expect(await findB()).toEqual(marked);
+    await value(await admin(`/keys/${ordered.id}`, 'PATCH', {failoverEnabled:true}));
+    expect((await value(await proxy('/echo', ordered.key))).url).toBe('https://a.example/gateway/echo');
     const cleared = await value(await admin(path, 'POST'));
     expect(cleared).toMatchObject({healthRevision: marked.healthRevision + 1, faultUntil: 0, faultReason: null});
-    expect((await proxy('/echo', keyB)).status).toBe(200);
+    expect((await value(await proxy('/echo', ordered.key))).url).toBe('https://b.example/echo');
     const before = await value(await admin('/config'));
     expect((await value(await admin(path, 'POST'))).healthRevision).toBe(cleared.healthRevision + 1);
     expect((await value(await admin('/config'))).version).toBe(before.version + 1);
+    await value(await admin(`/keys/${ordered.id}`, 'DELETE'));
   });
   it('optimistic SQL updates reject old versions and logout clears the cookie', async () => {
     const db = await mf.getD1Database('DB', 'relay');
