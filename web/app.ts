@@ -1,6 +1,6 @@
 interface Upstream { id: string; name: string; baseUrl: string; authType: string }
 interface KeyInfo { id: string; name: string; keyPrefix: string; createdAt: string; upstreamIds: string[] | null; canReveal: boolean }
-interface Settings { proxyUrl: string; activeUpstreamId: string | null; cacheTtlSeconds: number }
+interface Settings { proxyUrl: string; activeUpstreamId: string | null; cacheTtlSeconds: number; upstreamCooldownSeconds: number }
 interface ManagementSnapshot { config: Settings; upstreams: Upstream[]; keys: KeyInfo[] }
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 let settings: Settings;
@@ -75,14 +75,14 @@ function editKey(key?: KeyInfo) {
   const form = $<HTMLFormElement>('key-form'); form.reset();
   (form.elements.namedItem('id') as HTMLInputElement).value = key?.id ?? '';
   const name = form.elements.namedItem('name') as HTMLInputElement;
-  name.value = key?.name ?? ''; name.readOnly = !!key;
+  name.value = key?.name ?? '';
   const defaultName = upstreams.find(u => u.id === settings.activeUpstreamId)?.name ?? '未选择';
   const mode = $<HTMLSelectElement>('key-route-mode');
   mode.options[0].textContent = `跟随默认上游（${defaultName}）`;
   mode.value = key?.upstreamIds ? 'ordered' : 'default';
   keyRoutes = [...(key?.upstreamIds ?? [])];
   renderKeyRoutes();
-  $('key-title').textContent = key ? '修改 Key 上游' : '创建 Key';
+  $('key-title').textContent = key ? '编辑 Key' : '创建 Key';
   $('key-submit').textContent = key ? '保存' : '创建';
   $<HTMLDialogElement>('key-dialog').showModal();
 }
@@ -122,6 +122,7 @@ async function refresh() {
   $('proxy-url').textContent = settings.proxyUrl;
   $('current-upstream').textContent = list.find(u => u.id === settings.activeUpstreamId)?.name ?? '未选择';
   $('ttl-note').textContent = String(settings.cacheTtlSeconds);
+  $('cooldown-note').textContent = String(settings.upstreamCooldownSeconds);
   const cards = $('upstream-list'); cards.replaceChildren();
   if (!list.length) cards.append(node('div', '暂无上游', 'empty'));
   for (const u of list) {
@@ -150,7 +151,7 @@ async function refresh() {
       const routes = node('ol', undefined, 'key-route-summary');
       for (const id of key.upstreamIds) routes.append(node('li', list.find(u => u.id === id)?.name ?? '上游不可用'));
       info.append(routes);
-      if (key.upstreamIds.length > 1) info.append(node('p', '按顺序优先 · 自动故障转移'));
+      if (key.upstreamIds.length > 1) info.append(node('p', '按顺序优先 · 失败冷却'));
     } else info.append(node('p', `跟随默认上游：${list.find(u => u.id === settings.activeUpstreamId)?.name ?? '未选择'}`));
     const actions = node('div', undefined, 'actions');
     if (key.canReveal) {
@@ -161,7 +162,7 @@ async function refresh() {
         try { await copy(result.key); } catch { showKey(result.key, key.name); notify('无法自动复制，请在弹窗中手动复制。'); }
       })));
     } else info.append(node('p', '旧 Key 未保存可恢复副本，无法查看明文。'));
-    actions.append(button('修改上游', 'quiet small', () => editKey(key)), button('撤销', 'quiet small danger', () => void action(async () => {
+    actions.append(button('编辑', 'quiet small', () => editKey(key)), button('撤销', 'quiet small danger', () => void action(async () => {
       if (!confirm(`撤销“${key.name}”？此操作不可恢复。`)) return;
       await api(`/keys/${key.id}`, 'DELETE'); await refresh(); saved();
     }))); row.append(info, actions); rows.append(row);
@@ -219,7 +220,7 @@ $<HTMLFormElement>('key-form').addEventListener('submit', e => { e.preventDefaul
   const upstreamIds = data.routeMode === 'ordered' ? [...keyRoutes] : null;
   if (upstreamIds && !upstreamIds.length) throw new Error('请选择至少一个上游，或改为跟随默认上游');
   if (data.id) {
-    await api(`/keys/${data.id}`, 'PATCH', { upstreamIds });
+    await api(`/keys/${data.id}`, 'PATCH', { name: data.name, upstreamIds });
     $<HTMLDialogElement>('key-dialog').close(); await refresh(); saved(); return;
   }
   const result = await api<{ key: string }>('/keys', 'POST', { name: data.name, upstreamIds });

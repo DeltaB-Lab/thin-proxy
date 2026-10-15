@@ -39,6 +39,11 @@ export default { async fetch(request) {
   }
   if (url.pathname.endsWith('/redirect')) return new Response('keep redirect', {status:307,headers:{Location:'https://never-follow.example/target'}});
   if (url.pathname.endsWith('/error')) return new Response(' {"error":{"nested":[1,2]}} ', {status:429,headers:{'X-Custom':'preserved'}});
+  if (url.pathname.endsWith('/large')) {
+    let size = 0; const reader = request.body.getReader();
+    while (true) { const chunk = await reader.read(); if (chunk.done) break; size += chunk.value.byteLength; }
+    return Response.json({size,host:url.hostname});
+  }
   const bytes = new Uint8Array(await request.arrayBuffer());
   return Response.json({url:request.url, method:request.method, headers:Object.fromEntries(request.headers), bytes:Array.from(bytes)});
 }};`;
@@ -81,7 +86,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     const response = await admin('/session', 'POST', { key: adminKey }, false);
     expect(response.status).toBe(200); cookie = response.headers.get('set-cookie')!.split(';')[0];
     expect(response.headers.get('set-cookie')).toContain('HttpOnly');
-    expect((await admin('/config')).status).toBe(200);
+    expect((await value(await admin('/config'))).upstreamCooldownSeconds).toBe(180);
     expect((await proxy('/v1/messages', adminKey)).status).toBe(401);
   });
   it('creates independent forwarding keys without exposing hashes in listings', async () => {
@@ -161,9 +166,11 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     expect(echo.headers['x-business']).toBe('keep'); expect(echo.headers.cookie.trim()).toBe('business=keep');
   });
   it('preserves upstream errors and never follows redirects', async () => {
+    const redirect = await proxy('/redirect'); expect(redirect.status).toBe(307); expect(await redirect.text()).toBe('keep redirect');
     const error = await proxy('/error'); expect(error.status).toBe(429); expect(error.headers.get('x-custom')).toBe('preserved');
     expect(await error.text()).toBe(' {"error":{"nested":[1,2]}} ');
-    const redirect = await proxy('/redirect'); expect(redirect.status).toBe(307); expect(await redirect.text()).toBe('keep redirect');
+    // Updating credentials resets health for the shared fixture.
+    await value(await admin(`/upstreams/${upstreamA}`, 'PATCH', {key:'upstream-secret-A'}));
   });
   it('streams SSE before the upstream closes and preserves event bytes', async () => {
     const response = await proxy('/sse'); expect(response.headers.get('content-type')).toContain('text/event-stream');
@@ -199,6 +206,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
       req.on('error', reject); req.end();
     });
     expect(failed.status).toBe(403); expect(failed.body).toBe('handshake refused');
+    await value(await admin(`/upstreams/${upstreamB}`, 'PATCH', {key:'upstream-secret-B'}));
   });
   it('routes bound keys independently with the correct URL and credentials, even without a default', async () => {
     const pinned = await value(await admin('/keys', 'POST', { name: 'Pinned B', upstreamId: upstreamB }));
@@ -242,6 +250,32 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     expect((await admin(`/upstreams/${disposable.id}`, 'DELETE')).status).toBe(200);
     await value(await admin('/active-upstream', 'PUT', { id: upstreamB }));
   });
+  it('renames keys without changing their credentials or routes and updates name and routes atomically', async () => {
+    const record = await value(await admin('/keys', 'POST', { name: 'Before rename', upstreamIds: [upstreamA, upstreamB] }));
+    const db = await mf.getD1Database('DB', 'relay');
+    const storedKey = async () => {
+      const row = await db.prepare('SELECT config_json FROM config WHERE id=1').first<{config_json:string}>();
+      return JSON.parse(row!.config_json).accessKeys.find((key: any) => key.id === record.id);
+    };
+    const before = await storedKey();
+    const renamed = await value(await admin(`/keys/${record.id}`, 'PATCH', { name: '  我的电脑  ' }));
+    expect(renamed.name).toBe('我的电脑');
+    expect(await storedKey()).toEqual({ ...before, name: '我的电脑' });
+    expect(await value(await admin(`/keys/${record.id}/reveal`, 'POST'))).toEqual({ key: record.key });
+    expect((await value(await proxy('/echo', record.key))).url).toBe('https://a.example/gateway/echo');
+    const configBeforeFailures = await value(await admin('/config'));
+    for (const name of ['', '   ', 'x'.repeat(101), null, 42]) {
+      expect((await admin(`/keys/${record.id}`, 'PATCH', { name, upstreamIds: [upstreamB] })).status).toBe(400);
+    }
+    expect((await admin(`/keys/${record.id}`, 'PATCH', { name: 'Must not persist', upstreamIds: ['missing'] })).status).toBe(404);
+    expect(await value(await admin('/config'))).toEqual(configBeforeFailures);
+    expect(await storedKey()).toEqual({ ...before, name: '我的电脑' });
+    const updated = await value(await admin(`/keys/${record.id}`, 'PATCH', { name: '服务器', upstreamIds: [upstreamB, upstreamA] }));
+    expect(updated).toMatchObject({ name: '服务器', upstreamIds: [upstreamB, upstreamA] });
+    expect((await value(await admin('/keys'))).find((key: any) => key.id === record.id)).toEqual(updated);
+    expect((await value(await proxy('/echo', record.key))).url).toBe('https://b.example/echo');
+    await value(await admin(`/keys/${record.id}`, 'DELETE'));
+  });
   it('rejects invalid bindings and unauthorized changes without altering configuration', async () => {
     const before = await value(await admin('/config'));
     const keys = await value(await admin('/keys'));
@@ -258,12 +292,14 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     expect(await value(await admin('/config'))).toEqual(before);
     expect(await value(await admin('/keys'))).toEqual(keys);
   });
-  it('saves ordered routes, fails over HTTP/SSE/WebSocket, and protects every referenced upstream', async () => {
+  it('saves ordered routes, cools across client retries for HTTP/SSE/WebSocket, and protects referenced upstreams', async () => {
     const record = await value(await admin('/keys', 'POST', { name: 'Ordered', upstreamIds: [upstreamA, upstreamB] }));
     expect(record.upstreamIds).toEqual([upstreamA, upstreamB]);
     expect(record.encryptedKey).toBeUndefined(); expect(record.canReveal).toBe(true);
     expect((await value(await proxy('/echo', record.key))).url).toBe('https://a.example/gateway/echo');
     const bytes = Buffer.from([0, 255, 42, 13, 10, 128]);
+    const first = await proxy('/echo?fail=a.example', record.key, {method:'POST',body:bytes});
+    expect(first.status).toBe(503); expect(await first.text()).toBe('failed at a.example');
     const echo = await value(await proxy('/echo?fail=a.example', record.key, {method:'POST',body:bytes,headers:{'Content-Type':'application/octet-stream'}}));
     expect(echo.url).toBe('https://b.example/echo?fail=a.example'); expect(echo.bytes).toEqual([...bytes]);
     expect(echo.headers['x-api-key']).toBe('upstream-secret-B'); expect(echo.headers.authorization).toBeUndefined();
@@ -276,7 +312,15 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     const last = await proxy('/echo?fail=a.example&fail=b.example', record.key);
     expect(last.status).toBe(503); expect(await last.text()).toBe('failed at b.example');
     await value(await admin(`/keys/${record.id}`, 'PATCH', {upstreamIds:[upstreamB,upstreamA]}));
+    const cooling = await proxy('/echo', record.key);
+    expect(cooling.status).toBe(503); expect(Number(cooling.headers.get('Retry-After'))).toBeGreaterThan(0);
+    expect((await cooling.json() as any).error.code).toBe('UPSTREAMS_COOLING_DOWN');
+    // Route and name edits retain health; new credentials reset only that upstream.
+    await value(await admin(`/keys/${record.id}`, 'PATCH', {name:'Renamed while cooling'}));
+    expect((await proxy('/echo', record.key)).status).toBe(503);
+    await value(await admin(`/upstreams/${upstreamB}`, 'PATCH', {key:'upstream-secret-B'}));
     expect((await value(await proxy('/echo', record.key))).url).toBe('https://b.example/echo');
+    await value(await admin(`/upstreams/${upstreamA}`, 'PATCH', {key:'upstream-secret-A'}));
     expect((await admin(`/upstreams/${upstreamA}`, 'DELETE')).status).toBe(409);
     expect((await value(await admin('/keys'))).find((k:any) => k.id === record.id).upstreamIds).toEqual([upstreamB,upstreamA]);
     const before = await value(await admin('/config'));
@@ -287,6 +331,18 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     }
     expect((await admin(`/keys/${record.id}`,'PATCH',{upstreamId:upstreamA,upstreamIds:[upstreamB]})).status).toBe(400);
     expect(await value(await admin('/config'))).toEqual(before);
+    await value(await admin(`/keys/${record.id}`, 'DELETE'));
+  });
+  it('streams requests larger than 8 MiB with multiple configured upstreams', async () => {
+    const record = await value(await admin('/keys', 'POST', { name: 'Large upload', upstreamIds: [upstreamA, upstreamB] }));
+    const size = 9 * 1024 * 1024 + 17;
+    let remaining = size;
+    const body = new ReadableStream({pull(controller) {
+      const length = Math.min(64 * 1024, remaining);
+      controller.enqueue(new Uint8Array(length)); remaining -= length;
+      if (!remaining) controller.close();
+    }});
+    expect(await value(await proxy('/large', record.key, {method:'POST',body,duplex:'half'}))).toEqual({size,host:'a.example'});
     await value(await admin(`/keys/${record.id}`, 'DELETE'));
   });
   it('reveals the same key only to same-origin admins and never exposes ciphertext or plaintext in lists', async () => {
