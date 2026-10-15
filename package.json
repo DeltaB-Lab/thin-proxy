@@ -5,14 +5,15 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/patch-wrangler.mjs",
     "build": "node scripts/build.mjs",
     "init:local": "node scripts/init-local.mjs",
     "dev": "npm run build && wrangler dev",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "check": "npm run typecheck && npm test && npm run build",
-    "db:local": "wrangler d1 migrations apply DB --local",
-    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "db:local": "node scripts/patch-wrangler.mjs && wrangler d1 migrations apply DB --local",
+    "db:remote": "node scripts/patch-wrangler.mjs && wrangler d1 migrations apply DB --remote",
     "deploy": "npm run build && wrangler deploy"
   },
   "devDependencies": {
@@ -22,7 +23,7 @@
     "miniflare": "^4.0.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0",
-    "wrangler": "^4.0.0",
+    "wrangler": "4.151.0",
     "ws": "^8.18.0",
     "@types/ws": "^8.18.0"
   }
