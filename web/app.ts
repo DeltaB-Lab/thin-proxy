@@ -1,3 +1,4 @@
+import { enhanceSelect } from './select';
 interface Upstream { id: string; name: string; baseUrl: string; authType: string; faultUntil: number; faultReason: string | null }
 interface KeyInfo { id: string; name: string; keyPrefix: string; createdAt: string; upstreamIds: string[] | null; failoverEnabled: boolean; canReveal: boolean }
 interface Settings { proxyUrl: string; activeUpstreamId: string | null; cacheTtlSeconds: number; upstreamCooldownSeconds: number }
@@ -7,6 +8,8 @@ let settings: Settings;
 let upstreams: Upstream[] = [];
 let keyRoutes: string[] = [];
 let busy = false;
+const selects = Array.from(document.querySelectorAll('select'), enhanceSelect);
+function refreshSelects() { selects.forEach(select => select.refresh()); }
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 function notify(message: string, error = false) {
   clearTimeout(noticeTimer);
@@ -50,7 +53,7 @@ async function action(work: () => Promise<void>) {
   busy = true;
   document.querySelectorAll<HTMLButtonElement>('button').forEach(b => b.disabled = true);
   try { await work(); } catch (e) { notify(e instanceof Error ? e.message : '操作失败', true); }
-  finally { busy = false; document.querySelectorAll<HTMLButtonElement>('button').forEach(b => b.disabled = false); }
+  finally { busy = false; document.querySelectorAll<HTMLButtonElement>('button').forEach(b => b.disabled = false); refreshSelects(); }
 }
 function node(tag: string, text?: string, className?: string): HTMLElement {
   const el = document.createElement(tag); if (text !== undefined) el.textContent = text;
@@ -76,6 +79,7 @@ function editUpstream(upstream?: Upstream) {
   set('id', upstream?.id ?? ''); set('name', upstream?.name ?? ''); set('baseUrl', upstream?.baseUrl ?? ''); set('authType', upstream?.authType ?? 'bearer');
   (form.elements.namedItem('key') as HTMLInputElement).required = !upstream;
   $('upstream-title').textContent = upstream ? '编辑上游' : '添加上游'; $('edit-key-hint').hidden = !upstream;
+  refreshSelects();
   $<HTMLDialogElement>('upstream-dialog').showModal();
 }
 function editKey(key?: KeyInfo) {
@@ -124,6 +128,7 @@ function renderKeyRoutes() {
   const select = $<HTMLSelectElement>('key-upstream-add');
   select.replaceChildren(...upstreams.filter(u => !keyRoutes.includes(u.id)).map(u => new Option(u.name, u.id)));
   $('key-route-add').hidden = select.options.length === 0;
+  refreshSelects();
 }
 function showKey(key: string, title: string) {
   $('key-secret-title').textContent = title;
