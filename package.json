@@ -1,0 +1,29 @@
+{
+  "name": "thin-proxy",
+  "repository": { "type": "git", "url": "git+ssh://git@github.com/DeltaB-Lab/thin-proxy.git" },
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "init:local": "node scripts/init-local.mjs",
+    "dev": "npm run build && wrangler dev",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261014.1",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "miniflare": "^4.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0",
+    "wrangler": "^4.0.0",
+    "ws": "^8.18.0",
+    "@types/ws": "^8.18.0"
+  }
+}

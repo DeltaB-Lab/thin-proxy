@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "thin-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-06",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "thin-proxy",
+    "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+    "migrations_dir": "migrations"
+  }],
+  "vars": {
+    "CONFIG_CACHE_TTL_SECONDS": "30",
+    "SELF_HOSTS": ""
+  },
+  "observability": { "enabled": false }
+}
