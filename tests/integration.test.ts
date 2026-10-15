@@ -87,6 +87,12 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
   it('creates independent forwarding keys without exposing hashes in listings', async () => {
     const a = await value(await admin('/keys', 'POST', { name: 'A' })); keyA = a.key; idA = a.id;
     keyB = (await value(await admin('/keys', 'POST', { name: 'B' }))).key;
+    for (const token of [keyA, keyB]) {
+      expect(token).toHaveLength(64);
+      expect(token).toMatch(/^sk-[A-Za-z0-9_-]{61}$/);
+    }
+    expect(keyA).not.toBe(keyB);
+    expect(a.keyPrefix).toBe(keyA.slice(0, 14));
     const keys = await value(await admin('/keys'));
     expect(keys).toHaveLength(2); expect(keys[0].keyHash).toBeUndefined(); expect(keys[0].key).toBeUndefined();
     expect((await admin('/session', 'POST', { key: keyA }, false)).status).toBe(401);

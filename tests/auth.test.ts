@@ -22,6 +22,17 @@ describe('credential and URL boundaries', () => {
     expect(() => forwardingToken(new Request('https://relay.example', { headers: { Authorization: `Bearer ${secret}` } }))).toThrow();
     expect(() => requireOrigin(new Request('https://relay.example/_relay/api/keys', { headers: { Origin: 'https://evil.example' } }))).toThrow();
   });
+  it.each([`sk-${'aB0_-'.repeat(12)}x`, key])('accepts current and legacy forwarding formats: %s', token => {
+    for (const headers of [{ Authorization: `Bearer ${token}` }, { 'x-api-key': token }]) {
+      expect(forwardingToken(new Request('https://relay.example', { headers }))).toBe(token);
+    }
+  });
+  it.each([
+    `sk-${'a'.repeat(60)}`, `sk-${'a'.repeat(62)}`, `sk_${'a'.repeat(61)}`,
+    `sk-${'a'.repeat(60)}!`, `relay_${'a'.repeat(42)}`, `relay_${'a'.repeat(44)}`
+  ])('rejects incorrect forwarding key length, prefix or characters: %s', token => {
+    expect(() => forwardingToken(new Request('https://relay.example', { headers: { 'x-api-key': token } }))).toThrow();
+  });
   it.each([
     ['', '/v1/messages', '/v1/messages'],
     ['/v1', '/messages', '/v1/messages'],

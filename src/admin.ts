@@ -1,7 +1,7 @@
 import { testUpstreamAuth } from './auth-probe';
 import { issueSession, requireOrigin, requireSession, sessionCookie } from './auth';
 import { getCache } from './cache';
-import { decryptAccessKey, decryptKey, encryptAccessKey, encryptKey, hash, randomToken, sameSecret } from './crypto';
+import { decryptAccessKey, decryptKey, encryptAccessKey, encryptKey, hash, randomAccessKey, sameSecret } from './crypto';
 import { HttpError, json } from './errors';
 import { keyUpstreamIds } from './key-routing';
 import { readConfig, writeConfig } from './storage';
@@ -138,7 +138,7 @@ export async function admin(request: Request, env: Env): Promise<Response> {
   } else if (path === '/keys') {
     if (config.accessKeys.length >= 100) invalid('最多保存 100 个转发 Key');
     const upstreamIds = keyUpstreams(body, config, true);
-    const key = `relay_${randomToken()}`;
+    const key = randomAccessKey();
     const keyHash = await hash(key);
     if (config.accessKeys.some(k => k.keyHash === keyHash)) throw new Error('Key collision');
     const id = crypto.randomUUID();
