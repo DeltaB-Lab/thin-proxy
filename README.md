@@ -26,7 +26,7 @@ npm run db:local
 npm run dev
 ```
 
-打开 `http://localhost:8787/_relay/`，使用 `.dev.vars` 中的 ADMIN_KEY 登录。脚本只创建本地随机密钥，不输出密钥、不覆盖已有文件；不要提交 `.dev.vars`。浏览器需支持 localhost 上的 Secure Cookie；若当前浏览器限制它，可使用 `npm run dev -- --local-protocol https` 或直接运行 `npx wrangler dev --local-protocol https`（先构建页面）。不要通过关闭 Secure 属性解决生产登录问题。
+打开 `http://localhost:8787/_relay/`，使用 `.env` 中的 ADMIN_KEY 登录。脚本只创建本地随机密钥，不输出密钥、不覆盖已有文件；不要提交 `.env`。浏览器需支持 localhost 上的 Secure Cookie；若当前浏览器限制它，可使用 `npm run dev -- --local-protocol https` 或直接运行 `npx wrangler dev --local-protocol https`（先构建页面）。不要通过关闭 Secure 属性解决生产登录问题。
 
 开发流程：添加上游 → 设为当前 → 创建转发 Key → 配置客户端。上游必须是公开 HTTPS 地址，不能指向 Worker 自身。第一版拒绝 IPv6 字面量和本机、明显私网地址，域名解析不做完整 DNS 防护；由唯一管理者配置受信任目的地址。
 
@@ -34,7 +34,7 @@ npm run dev
 
 当前生产环境已部署，管理页面为 `https://llm-api.drt3b.com/_relay/`，代理地址为 `https://llm-api.drt3b.com`。仅 main 分支自动部署；workers.dev、版本预览 URL 和预览分支构建均关闭。部署设置见 [自动部署文档](docs/04-自动部署.md)。
 
-本机生产管理密钥保存在 Git 忽略的 `.env` 中（ADMIN_KEY），只供读取并登录生产网页；本地开发仍使用 `.dev.vars`。不要上传这些文件。自定义域名是代理入口，不能把 `llm-api.drt3b.com` 配为上游。
+密钥统一保存在 Git 忽略的 `.env` 中，包含 ADMIN_KEY 和 UPSTREAM_KEY_ENCRYPTION_KEY。Wrangler 本地开发直接读取 `.env`；线上仍使用 Cloudflare Secret，普通部署不会上传 `.env`。换电脑时先复制原 `.env` 再初始化；没有该文件时初始化脚本才生成新密钥。不要提交或公开此文件。自定义域名是代理入口，不能把 `llm-api.drt3b.com` 配为上游。
 
 在其他 Cloudflare 账户新建环境时，按顺序操作：
 
