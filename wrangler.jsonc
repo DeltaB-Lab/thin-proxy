@@ -2,7 +2,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "thin-proxy",
   "account_id": "ec8ee3fdd7929dc2587e1a8052a7ae9a",
-  "workers_dev": true,
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "llm-api.drt3b.com", "custom_domain": true }],
   "main": "src/index.ts",
   "compatibility_date": "2026-08-06",
   "assets": {
@@ -18,7 +20,7 @@
   }],
   "vars": {
     "CONFIG_CACHE_TTL_SECONDS": "30",
-    "SELF_HOSTS": "thin-proxy.skpm.workers.dev"
+    "SELF_HOSTS": "llm-api.drt3b.com,thin-proxy.skpm.workers.dev"
   },
   "observability": { "enabled": false }
 }
