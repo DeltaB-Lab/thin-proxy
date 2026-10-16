@@ -14,7 +14,7 @@ const publicUpstream = (u: Config['upstreams'][number]) => ({ id: u.id, name: u.
   healthRevision: u.healthRevision ?? 0, faultUntil: u.faultUntil ?? 0, faultReason: u.faultReason ?? null });
 const publicKey = (key: AccessKey) => ({
   id: key.id, name: key.name, keyPrefix: key.keyPrefix, createdAt: key.createdAt,
-  upstreamIds: keyUpstreamIds(key), failoverEnabled: keyFailoverEnabled(key), canReveal: !!key.encryptedKey
+  enabled: key.enabled !== false, upstreamIds: keyUpstreamIds(key), failoverEnabled: keyFailoverEnabled(key), canReveal: !!key.encryptedKey
 });
 function keyUpstreams(body: Record<string, unknown>, config: Config, creating = false): string[] | null {
   if (body.upstreamIds !== undefined && body.upstreamId !== undefined) invalid('不能同时提供 upstreamIds 和 upstreamId');
@@ -166,7 +166,7 @@ export async function admin(request: Request, env: Env): Promise<Response> {
     if (config.accessKeys.some(k => k.keyHash === keyHash)) throw new Error('Key collision');
     const id = crypto.randomUUID();
     const record = { id, name: field(body.name, '名称'), keyHash, keyPrefix: key.slice(0, 14), createdAt: new Date().toISOString(),
-      upstreamIds, failoverEnabled, encryptedKey: await encryptAccessKey(env, id, key) };
+      upstreamIds, failoverEnabled, enabled: true, encryptedKey: await encryptAccessKey(env, id, key) };
     config.accessKeys.push(record);
     result = { ...publicKey(record), key };
     status = 201;
@@ -176,7 +176,11 @@ export async function admin(request: Request, env: Env): Promise<Response> {
     if (method === 'DELETE') config.accessKeys = config.accessKeys.filter(k => k.id !== record.id);
     else {
       const changesRoutes = body.upstreamIds !== undefined || body.upstreamId !== undefined;
-      if (body.name === undefined && !changesRoutes && body.failoverEnabled === undefined) invalid('请提供名称、上游配置或故障转移开关');
+      if (body.name === undefined && !changesRoutes && body.failoverEnabled === undefined && body.enabled === undefined) invalid('请提供名称、上游配置、故障转移开关或服务状态');
+      if (body.enabled !== undefined) {
+        if (typeof body.enabled !== 'boolean') invalid('服务状态必须为布尔值');
+        if ((record.enabled !== false) !== body.enabled) record.enabled = body.enabled;
+      }
       if (body.name !== undefined) record.name = field(body.name, '名称');
       if (changesRoutes) {
         const ids = keyUpstreams(body, config);

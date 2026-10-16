@@ -50,7 +50,7 @@ describe('management snapshot and write minimization', () => {
     expect(await response.json()).toEqual({
       config: { proxyUrl: origin, activeUpstreamId: 'a', cacheTtlSeconds: 30, upstreamCooldownSeconds: 1800, version: 7 },
       upstreams: ['a', 'b'].map(id => ({ id, name: id, baseUrl: `https://${id}.example/`, authType: 'bearer', hasKey: true, healthRevision: 0, faultUntil: 0, faultReason: null })),
-      keys: [{ id: 'k', name: 'Key', keyPrefix: 'relay_prefix', createdAt: '2026-10-15', upstreamIds: ['a', 'b'], failoverEnabled: true, canReveal: true }]
+      keys: [{ id: 'k', name: 'Key', keyPrefix: 'relay_prefix', createdAt: '2026-10-15', upstreamIds: ['a', 'b'], enabled: true, failoverEnabled: true, canReveal: true }]
     });
     expect(read).toHaveBeenCalledTimes(1);
     expect(write).not.toHaveBeenCalled();
@@ -60,6 +60,7 @@ describe('management snapshot and write minimization', () => {
     ['/upstreams/a', 'PATCH', { name: 'a', baseUrl: 'https://a.example/', authType: 'bearer', key: '' }],
     ['/keys/k', 'PATCH', { upstreamIds: ['a', 'b'] }],
     ['/keys/k', 'PATCH', { name: ' Key ' }],
+    ['/keys/k', 'PATCH', { enabled: true }],
     ['/keys/k', 'PATCH', { name: 'Key', upstreamIds: ['a', 'b'] }],
     ['/active-upstream', 'PUT', { id: 'a' }]
   ])('does not write or publish unchanged %s', async (path, method, body) => {
@@ -89,6 +90,33 @@ describe('management snapshot and write minimization', () => {
     expect(row.version).toBe(8);
     expect((await getCache(env).get()).config.accessKeys[0].upstreamIds).toEqual(['b', 'a']);
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops and restores one key, preserving credentials, routes and other keys', async () => {
+    const config = fixture(); config.accessKeys.push({...config.accessKeys[0], id: 'other', keyHash: 'other-hash'});
+    const {call, row, write, env} = setup(config);
+    await getCache(env).get();
+    expect(await (await call('/keys/k', 'PATCH', {enabled:false})).json()).toMatchObject({enabled:false});
+    expect(JSON.parse(row.config_json)).toEqual({...config, accessKeys:[{...config.accessKeys[0], enabled:false}, config.accessKeys[1]]});
+    expect((await getCache(env).get()).keysByHash.get('private-hash')?.enabled).toBe(false);
+    expect(await (await call('/keys')).json()).toMatchObject([{id:'k', enabled:false}, {id:'other', enabled:true}]);
+    await call('/keys/k', 'PATCH', {enabled:false}); expect(write).toHaveBeenCalledTimes(1);
+    await call('/keys/k', 'PATCH', {name:'Renamed', upstreamIds:['b','a']});
+    expect(JSON.parse(row.config_json).accessKeys[0].enabled).toBe(false);
+    expect(await (await call('/keys/k', 'PATCH', {enabled:true})).json()).toMatchObject({enabled:true, name:'Renamed', upstreamIds:['b','a']});
+    expect((await getCache(env).get()).keysByHash.get('private-hash')?.enabled).toBe(true);
+    expect(JSON.parse(row.config_json).accessKeys[0].encryptedKey).toEqual(config.accessKeys[0].encryptedKey);
+  });
+
+  it('validates and authenticates service status changes before writing', async () => {
+    const {call, write} = setup();
+    for (const enabled of [null, 'false', 0, [], {}]) {
+      await expect(call('/keys/k', 'PATCH', {enabled})).rejects.toMatchObject({status:400});
+    }
+    await expect(call('/keys/k', 'PATCH', {enabled:false}, false)).rejects.toMatchObject({status:401});
+    await expect(call('/keys/missing', 'PATCH', {enabled:false})).rejects.toMatchObject({status:404});
+    expect(write).not.toHaveBeenCalled();
+    expect(await (await call('/keys', 'POST', {name:'New key'})).json()).toMatchObject({enabled:true});
   });
 
   it('toggles failover without changing routes, secrets or shared health and skips unchanged saves', async () => {

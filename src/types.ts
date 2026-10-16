@@ -33,6 +33,8 @@ export interface AccessKey {
   upstreamId?: string | null;
   upstreamIds?: string[] | null;
   failoverEnabled?: boolean;
+  // Older keys remain enabled until explicitly stopped.
+  enabled?: boolean;
   encryptedKey?: EncryptedKey;
 }
 export interface Config {
