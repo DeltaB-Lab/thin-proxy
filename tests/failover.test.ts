@@ -34,6 +34,34 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+describe('key service status', () => {
+  it.each([
+    {},
+    {method:'POST', body:'stream request', headers:{Accept:'text/event-stream'}},
+    {headers:{Upgrade:'websocket', Connection:'Upgrade'}}
+  ])('rejects stopped keys before routing or contacting any upstream: %j', async options => {
+    state.config.accessKeys[0].enabled = false;
+    state.config.accessKeys[0].upstreamIds = null;
+    state.config.activeUpstreamId = null;
+    await expect(proxy(request(options), env)).rejects.toMatchObject({status:403, code:'KEY_DISABLED'});
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(recordUpstreamFault).not.toHaveBeenCalled();
+  });
+
+  it('keeps other keys usable and restores access with the same token', async () => {
+    const stopped = state.config.accessKeys[0]; stopped.enabled = false;
+    const otherToken = 'relay_' + 'b'.repeat(43);
+    const otherHash = await hash(otherToken);
+    state = snapshot(2, {...state.config, accessKeys:[stopped, {...stopped, id:'other', keyHash:otherHash, enabled:true}]});
+    fetchMock.mockImplementation(async () => new Response('ok'));
+    await expect(proxy(request(), env)).rejects.toMatchObject({status:403, code:'KEY_DISABLED'});
+    expect(await (await proxy(request({headers:{Authorization:'Bearer ' + otherToken}}), env)).text()).toBe('ok');
+    stopped.enabled = true;
+    expect(await (await proxy(request(), env)).text()).toBe('ok');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('ordered upstream cooldown', () => {
   it.each(['single', 'legacy', 'default', 'disabled-multi'] as const)('bypasses persisted faults and never reports direct-route failures: %s', async mode => {
     const key = state.config.accessKeys[0];

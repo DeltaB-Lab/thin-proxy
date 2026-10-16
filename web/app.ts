@@ -1,6 +1,6 @@
 import { enhanceSelect } from './select';
 interface Upstream { id: string; name: string; baseUrl: string; authType: string; faultUntil: number; faultReason: string | null }
-interface KeyInfo { id: string; name: string; keyPrefix: string; createdAt: string; upstreamIds: string[] | null; failoverEnabled: boolean; canReveal: boolean }
+interface KeyInfo { enabled: boolean; id: string; name: string; keyPrefix: string; createdAt: string; upstreamIds: string[] | null; failoverEnabled: boolean; canReveal: boolean }
 interface Settings { proxyUrl: string; activeUpstreamId: string | null; cacheTtlSeconds: number; upstreamCooldownSeconds: number }
 interface ManagementSnapshot { config: Settings; upstreams: Upstream[]; keys: KeyInfo[] }
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -177,7 +177,7 @@ async function refresh() {
   if (!keys.length) rows.append(node('div', '暂无 Key', 'empty'));
   for (const key of keys) {
     const row = node('div', undefined, 'key-row'); const info = node('div');
-    info.append(node('strong', key.name), node('p', `${key.keyPrefix}… · ${new Date(key.createdAt).toLocaleString()}`));
+    info.append(node('span', key.enabled ? '服务中' : '已停止服务', key.enabled ? 'badge' : 'tag'), node('strong', key.name), node('p', `${key.keyPrefix}… · ${new Date(key.createdAt).toLocaleString()}`));
     if (key.upstreamIds) {
       const routes = node('ol', undefined, 'key-route-summary');
       for (const id of key.upstreamIds) routes.append(node('li', list.find(u => u.id === id)?.name ?? '上游不可用'));
@@ -193,7 +193,10 @@ async function refresh() {
         try { await copy(result.key); } catch { showKey(result.key, key.name); notify('无法自动复制，请在弹窗中手动复制。'); }
       })));
     } else info.append(node('p', '旧 Key 未保存可恢复副本，无法查看明文。'));
-    actions.append(button('编辑', 'quiet small', () => editKey(key)), button('撤销', 'quiet small danger', () => void action(async () => {
+    actions.append(button(key.enabled ? '停止服务' : '恢复服务', key.enabled ? 'quiet small danger' : 'small', () => void action(async () => {
+      await api(`/keys/${key.id}`, 'PATCH', { enabled: !key.enabled }); await refresh();
+      notify(`已${key.enabled ? '停止' : '恢复'}此 Key 的服务，其他实例约 ${settings.cacheTtlSeconds} 秒内同步。已建立的连接不受影响。`);
+    })), button('编辑', 'quiet small', () => editKey(key)), button('撤销', 'quiet small danger', () => void action(async () => {
       if (!confirm(`撤销“${key.name}”？此操作不可恢复。`)) return;
       await api(`/keys/${key.id}`, 'DELETE'); await refresh(); saved();
     }))); row.append(info, actions); rows.append(row);
