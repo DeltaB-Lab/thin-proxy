@@ -1,5 +1,5 @@
 import { enhanceSelect } from './select';
-interface Upstream { id: string; name: string; baseUrl: string; authType: string; faultUntil: number; faultReason: string | null }
+interface Upstream { id: string; name: string; baseUrl: string; modelCatalogUrl?: string; authType: string; faultUntil: number; faultReason: string | null }
 interface KeyInfo { enabled: boolean; id: string; name: string; keyPrefix: string; createdAt: string; upstreamIds: string[] | null; failoverEnabled: boolean; canReveal: boolean }
 interface Settings { proxyUrl: string; activeUpstreamId: string | null; cacheTtlSeconds: number; upstreamCooldownSeconds: number }
 interface ManagementSnapshot { config: Settings; upstreams: Upstream[]; keys: KeyInfo[] }
@@ -77,6 +77,7 @@ function editUpstream(upstream?: Upstream) {
   $('auth-test-results').hidden = true; $('auth-test-results').replaceChildren();
   const set = (name: string, value: string) => (form.elements.namedItem(name) as HTMLInputElement).value = value;
   set('id', upstream?.id ?? ''); set('name', upstream?.name ?? ''); set('baseUrl', upstream?.baseUrl ?? ''); set('authType', upstream?.authType ?? 'bearer');
+  set('modelCatalogUrl', upstream?.modelCatalogUrl ?? '');
   (form.elements.namedItem('key') as HTMLInputElement).required = !upstream;
   $('upstream-title').textContent = upstream ? '编辑上游' : '添加上游'; $('edit-key-hint').hidden = !upstream;
   refreshSelects();

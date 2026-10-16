@@ -6,7 +6,9 @@ import { recordUpstreamFault } from './storage';
 import { keyFailoverEnabled, keyUpstreamIds } from './key-routing';
 import { getUpstreamHealth, upstreamCooldownSeconds } from './upstream-health';
 import { isSelf } from './validation';
-import type { Env } from './types';
+import type { Env, Upstream } from './types';
+
+const MODEL_CATALOG_PATH = '/backend-api/codex/models';
 
 function requireConnected(signal: AbortSignal): void {
   if (signal.aborted) throw new HttpError(499, 'CLIENT_CLOSED_REQUEST', '客户端已取消请求');
@@ -19,6 +21,18 @@ export function targetUrl(base: string, incoming: URL): URL {
     ? incoming.pathname.slice(3) : incoming.pathname;
   target.pathname = prefix + path;
   target.search = incoming.search;
+  return target;
+}
+export function upstreamTargetUrl(upstream: Pick<Upstream, 'baseUrl' | 'modelCatalogUrl'>, incoming: URL): URL {
+  if (incoming.pathname !== MODEL_CATALOG_PATH || !upstream.modelCatalogUrl) return targetUrl(upstream.baseUrl, incoming);
+  const target = new URL(upstream.modelCatalogUrl);
+  // Preserve raw query encoding and repeated values; configured names take precedence.
+  const configured = new Set(target.searchParams.keys());
+  const forwarded = incoming.search.slice(1).split('&').filter(part => {
+    const name = new URLSearchParams(part).keys().next().value;
+    return part && (name === undefined || !configured.has(name));
+  }).join('&');
+  if (forwarded) target.search = target.search ? `${target.search}&${forwarded}` : `?${forwarded}`;
   return target;
 }
 function outboundHeaders(request: Request, upgrade: boolean): Headers {
@@ -46,12 +60,14 @@ export async function proxy(request: Request, env: Env, context?: Pick<Execution
   const timeoutSeconds = Number(env.UPSTREAM_TIMEOUT_SECONDS ?? '30');
   if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds > 300) throw new Error('Invalid upstream timeout');
   const failover = keyFailoverEnabled(accessKey);
+  const incoming = new URL(request.url);
+  const catalog = incoming.pathname === MODEL_CATALOG_PATH;
   const cooldownMs = failover ? upstreamCooldownSeconds(env) * 1000 : 0;
   const upgrade = request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
   requireConnected(request.signal);
   // Direct routes neither consult nor update shared failover health.
-  const attempt = failover ? getUpstreamHealth(env).select(state, ids, cooldownMs, timeoutSeconds * 1000) : undefined;
+  const attempt = failover ? getUpstreamHealth(env).select(state, ids, cooldownMs, timeoutSeconds * 1000, !catalog) : undefined;
   const upstream = attempt?.upstream ?? state.config.upstreams.find(item => item.id === ids[0]);
   if (!upstream) throw new HttpError(503, 'CONFIG_UNAVAILABLE', 'Key 指定的上游不存在');
   const fail = async (reason: string) => {
@@ -73,7 +89,7 @@ export async function proxy(request: Request, env: Env, context?: Pick<Execution
     else await persist;
   };
   try {
-    const target = targetUrl(upstream.baseUrl, new URL(request.url));
+    const target = upstreamTargetUrl(upstream, incoming);
     if (isSelf(target.hostname, request, env)) throw new HttpError(502, 'PROXY_LOOP', '上游不能指向代理自身');
     const key = await decryptKey(env, upstream);
     const headers = outboundHeaders(request, upgrade);

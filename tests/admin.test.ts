@@ -49,7 +49,7 @@ describe('management snapshot and write minimization', () => {
     expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect(await response.json()).toEqual({
       config: { proxyUrl: origin, activeUpstreamId: 'a', cacheTtlSeconds: 30, upstreamCooldownSeconds: 1800, version: 7 },
-      upstreams: ['a', 'b'].map(id => ({ id, name: id, baseUrl: `https://${id}.example/`, authType: 'bearer', hasKey: true, healthRevision: 0, faultUntil: 0, faultReason: null })),
+      upstreams: ['a', 'b'].map(id => ({ id, name: id, baseUrl: `https://${id}.example/`, modelCatalogUrl: '', authType: 'bearer', hasKey: true, healthRevision: 0, faultUntil: 0, faultReason: null })),
       keys: [{ id: 'k', name: 'Key', keyPrefix: 'relay_prefix', createdAt: '2026-10-15', upstreamIds: ['a', 'b'], enabled: true, failoverEnabled: true, canReveal: true }]
     });
     expect(read).toHaveBeenCalledTimes(1);
@@ -57,6 +57,7 @@ describe('management snapshot and write minimization', () => {
   });
 
   it.each([
+    ['/upstreams/a', 'PATCH', { modelCatalogUrl: '' }],
     ['/upstreams/a', 'PATCH', { name: 'a', baseUrl: 'https://a.example/', authType: 'bearer', key: '' }],
     ['/keys/k', 'PATCH', { upstreamIds: ['a', 'b'] }],
     ['/keys/k', 'PATCH', { name: ' Key ' }],
@@ -72,6 +73,39 @@ describe('management snapshot and write minimization', () => {
     expect(row.version).toBe(7); expect(row.updated_at).toBe('original');
     expect(publish).not.toHaveBeenCalled();
   });
+
+  it('creates, preserves, edits and clears a catalog URL without resetting conversation health', async () => {
+    const { call, env, row, write } = setup();
+    const catalog = 'https://catalog.example/catalog.json?version=2&tag=a&tag=b';
+    const created = await (await call('/upstreams', 'POST', {
+      name: 'Catalog', baseUrl: 'https://chat.example/v1', modelCatalogUrl: catalog, authType: 'bearer', key: 'test-secret'
+    })).json() as any;
+    expect(created.modelCatalogUrl).toBe(catalog);
+    expect((await getCache(env).get()).config.upstreams.find(u => u.id === created.id)?.modelCatalogUrl).toBe(catalog);
+    await call(`/upstreams/${created.id}`, 'PATCH', { name: 'Renamed' });
+    expect((await (await call('/snapshot')).json() as any).upstreams.find((u: any) => u.id === created.id).modelCatalogUrl).toBe(catalog);
+    const config = JSON.parse(row.config_json);
+    const saved = config.upstreams.find((u: any) => u.id === created.id);
+    Object.assign(saved, { healthRevision: 9, faultUntil: Date.now() + 60_000, faultReason: 'HTTP 503' });
+    row.config_json = JSON.stringify(config); row.version++;
+    await call(`/upstreams/${created.id}`, 'PATCH', { modelCatalogUrl: 'https://other.example/catalog' });
+    expect(JSON.parse(row.config_json).upstreams.find((u: any) => u.id === created.id)).toEqual({ ...saved, modelCatalogUrl: 'https://other.example/catalog' });
+    await call(`/upstreams/${created.id}`, 'PATCH', { modelCatalogUrl: '' });
+    expect((await getCache(env).get()).config.upstreams.find(u => u.id === created.id)?.modelCatalogUrl).toBeUndefined();
+    expect((await (await call('/upstreams')).json() as any[]).find(u => u.id === created.id).modelCatalogUrl).toBe('');
+    write.mockClear();
+    await call(`/upstreams/${created.id}`, 'PATCH', { modelCatalogUrl: null });
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it.each(['http://catalog.example/models', 'https://user:pass@catalog.example/models', 'https://catalog.example/#x',
+    'https://relay.example/models', 'https://127.1/models', 'https://10.0.0.1/models', 'https://[::1]/models', 42, {}])(
+    'rejects invalid catalog destinations without saving: %j', async modelCatalogUrl => {
+      const { call, write } = setup();
+      await expect(call('/upstreams/a', 'PATCH', { modelCatalogUrl })).rejects.toMatchObject({ status: 400 });
+      await expect(call('/upstreams', 'POST', { name: 'Invalid', baseUrl: 'https://chat.example', authType: 'bearer', key: 'test-secret', modelCatalogUrl })).rejects.toMatchObject({ status: 400 });
+      expect(write).not.toHaveBeenCalled();
+    });
 
   it.each([undefined, null, 'a'])('does not rewrite unchanged legacy binding %s', async upstreamId => {
     const config = fixture(); delete config.accessKeys[0].upstreamIds;
