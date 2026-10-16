@@ -10,6 +10,10 @@ const config = (): Config => ({
 });
 
 describe('key routing snapshots', () => {
+  it.each([null, 42, false, {}, []])('rejects malformed persisted catalog URLs: %j', value => {
+    const data = config(); data.upstreams[0].modelCatalogUrl = value as unknown as string;
+    expect(() => snapshot(1, data)).toThrow('Invalid stored configuration');
+  });
   it('reads legacy keys without a binding and indexes their metadata', () => {
     const state = snapshot(1, config());
     const key = state.keysByHash.get('hash')!;

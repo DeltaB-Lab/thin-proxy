@@ -19,11 +19,19 @@ export function isSelf(hostname: string, request: Request, env: Env): boolean {
   return self.includes(normalize(hostname));
 }
 export function baseUrl(value: unknown, request: Request, env: Env): string {
-  const raw = field(value, '上游 URL', 2048);
+  return upstreamUrl(value, request, env, false);
+}
+export function modelCatalogUrl(value: unknown, request: Request, env: Env): string | undefined {
+  if (value == null || (typeof value === 'string' && !value.trim())) return undefined;
+  return upstreamUrl(value, request, env, true);
+}
+function upstreamUrl(value: unknown, request: Request, env: Env, catalog: boolean): string {
+  const name = catalog ? '模型目录 URL' : '上游 URL';
+  const raw = field(value, name, 2048);
   let url: URL;
-  try { url = new URL(raw); } catch { return invalid('上游 URL 格式错误'); }
-  if (url.protocol !== 'https:' || url.username || url.password || raw.includes('?') || raw.includes('#')) {
-    invalid('上游仅支持 HTTPS，不允许用户名、密码、查询参数或 fragment');
+  try { url = new URL(raw); } catch { return invalid(`${name} 格式错误`); }
+  if (url.protocol !== 'https:' || url.username || url.password || (!catalog && raw.includes('?')) || raw.includes('#')) {
+    invalid(catalog ? '模型目录仅支持 HTTPS，不允许用户名、密码或 fragment' : '上游仅支持 HTTPS，不允许用户名、密码、查询参数或 fragment');
   }
   const host = url.hostname.toLowerCase().replace(/\.$/, '');
   // Conservative literal/local address policy. DNS destinations are configured by the sole administrator.

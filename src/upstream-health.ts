@@ -43,7 +43,7 @@ export class UpstreamHealth {
     }
   }
 
-  select(snapshot: Snapshot, ids: string[], cooldownMs: number, timeoutMs: number): UpstreamAttempt {
+  select(snapshot: Snapshot, ids: string[], cooldownMs: number, timeoutMs: number, trackHealth = true): UpstreamAttempt {
     this.sync(snapshot);
     const now = this.now();
     let nextRetry = Infinity;
@@ -58,11 +58,13 @@ export class UpstreamHealth {
         nextRetry = Math.min(nextRetry, Math.max(health.retryAt, health.probe?.expectedEnd ?? 0));
         continue;
       }
-      const token = health.retryAt ? Symbol('probe') : undefined;
+      // Catalog requests follow routing health but cannot probe or change conversation health.
+      const token = trackHealth && health.retryAt ? Symbol('probe') : undefined;
       if (token) health.probe = { token, expectedEnd: now + timeoutMs };
       const failures = health.failures;
       let finished = false;
       return { upstream, finish: outcome => {
+        if (!trackHealth) return false;
         if (finished) return false;
         finished = true;
         if (this.records.get(id) !== health) return false;

@@ -16,7 +16,7 @@ export default { async fetch(request) {
     await request.arrayBuffer();
     return new Response('failed at ' + url.hostname, {status:Number(url.searchParams.get('status') || '503'),headers:{'X-Upstream':url.hostname}});
   }
-  if (url.pathname.endsWith('/models')) {
+  if (url.pathname.endsWith('/models') && !url.pathname.endsWith('/backend-api/codex/models')) {
     const valid = url.hostname === 'a.example' ? request.headers.get('Authorization') === 'Bearer upstream-secret-A' : request.headers.get('x-api-key') === 'upstream-secret-B';
     return valid ? Response.json({data:[{id:'test-model'}]}) : new Response('unauthorized', {status:401});
   }
@@ -143,6 +143,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     const result = await value(await admin('/test-auth', 'POST', {id:upstreamA,baseUrl:'https://a.example/gateway',key:''}));
     expect(result.anonymousStatus).toBe(401);
     expect(result.results.map((r: any) => r.outcome)).toEqual(['available','rejected']);
+    expect(result.results.map((r: any) => r.models)).toEqual([['test-model'], undefined]);
     expect(JSON.stringify(result)).not.toContain('upstream-secret');
     expect(await value(await admin('/config'))).toEqual(before);
     const b = await value(await admin('/test-auth', 'POST', {baseUrl:'https://b.example',key:'upstream-secret-B'}));
@@ -441,6 +442,42 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     expect((await value(await admin(path, 'POST'))).healthRevision).toBe(cleared.healthRevision + 1);
     expect((await value(await admin('/config'))).version).toBe(before.version + 1);
     await value(await admin(`/keys/${ordered.id}`, 'DELETE'));
+  });
+  it('persists catalog overrides and routes through the Worker with selected credentials and isolated faults', async () => {
+    const path = '/backend-api/codex/models';
+    const a = await value(await admin('/upstreams', 'POST', {
+      name: 'Catalog A', baseUrl: 'https://chat-a.example/v1', authType: 'bearer', key: 'catalog-secret-A',
+      modelCatalogUrl: 'https://catalog-a.example/custom/list?client_version=fixed&tag=a&tag=b'
+    }));
+    const b = await value(await admin('/upstreams', 'POST', {
+      name: 'Catalog B', baseUrl: 'https://chat-b.example/gateway/v1/', authType: 'x-api-key', key: 'catalog-secret-B'
+    }));
+    const key = await value(await admin('/keys', 'POST', { name: 'Catalog', upstreamIds: [a.id, b.id], failoverEnabled: true }));
+    try {
+      const echo = await value(await proxy(`${path}?client_version=client&x=1&x=2&q=a%20b`, key.key));
+      expect(echo.url).toBe('https://catalog-a.example/custom/list?client_version=fixed&tag=a&tag=b&x=1&x=2&q=a%20b');
+      expect(echo.headers.authorization).toBe('Bearer catalog-secret-A'); expect(echo.headers['x-api-key']).toBeUndefined();
+      const before = await value(await admin('/snapshot'));
+      const failed = await proxy(`${path}?fail=catalog-a.example&status=401`, key.key);
+      expect(failed.status).toBe(401); expect(await failed.text()).toBe('failed at catalog-a.example');
+      expect(await value(await admin('/snapshot'))).toEqual(before);
+      expect((await value(await proxy('/v1/responses', key.key))).url).toBe('https://chat-a.example/v1/responses');
+      await value(await admin(`/upstreams/${a.id}`, 'PATCH', { modelCatalogUrl: '' }));
+      expect((await value(await proxy(path, key.key))).url).toBe('https://chat-a.example/v1/backend-api/codex/models');
+      await value(await admin(`/upstreams/${a.id}`, 'PATCH', { modelCatalogUrl: 'https://catalog-a.example/new/list' }));
+      expect((await value(await proxy(path, key.key))).url).toBe('https://catalog-a.example/new/list');
+      expect((await proxy('/v1/responses?fail=chat-a.example', key.key)).status).toBe(503);
+      await waitForFault(a.id);
+      const backup = await value(await proxy(path, key.key));
+      expect(backup.url).toBe('https://chat-b.example/gateway/v1/backend-api/codex/models');
+      expect(backup.headers['x-api-key']).toBe('catalog-secret-B'); expect(backup.headers.authorization).toBeUndefined();
+      await value(await admin(`/upstreams/${b.id}`, 'PATCH', { modelCatalogUrl: 'https://catalog-b.example/list' }));
+      expect((await value(await proxy(path, key.key))).url).toBe('https://catalog-b.example/list');
+    } finally {
+      await value(await admin(`/keys/${key.id}`, 'DELETE'));
+      await value(await admin(`/upstreams/${a.id}`, 'DELETE'));
+      await value(await admin(`/upstreams/${b.id}`, 'DELETE'));
+    }
   });
   it('optimistic SQL updates reject old versions and logout clears the cookie', async () => {
     const db = await mf.getD1Database('DB', 'relay');

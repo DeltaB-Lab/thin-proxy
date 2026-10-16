@@ -1,5 +1,5 @@
 import { enhanceSelect } from './select';
-interface Upstream { id: string; name: string; baseUrl: string; authType: string; faultUntil: number; faultReason: string | null }
+interface Upstream { id: string; name: string; baseUrl: string; modelCatalogUrl?: string; authType: string; faultUntil: number; faultReason: string | null }
 interface KeyInfo { enabled: boolean; id: string; name: string; keyPrefix: string; createdAt: string; upstreamIds: string[] | null; failoverEnabled: boolean; canReveal: boolean }
 interface Settings { proxyUrl: string; activeUpstreamId: string | null; cacheTtlSeconds: number; upstreamCooldownSeconds: number }
 interface ManagementSnapshot { config: Settings; upstreams: Upstream[]; keys: KeyInfo[] }
@@ -77,6 +77,7 @@ function editUpstream(upstream?: Upstream) {
   $('auth-test-results').hidden = true; $('auth-test-results').replaceChildren();
   const set = (name: string, value: string) => (form.elements.namedItem(name) as HTMLInputElement).value = value;
   set('id', upstream?.id ?? ''); set('name', upstream?.name ?? ''); set('baseUrl', upstream?.baseUrl ?? ''); set('authType', upstream?.authType ?? 'bearer');
+  set('modelCatalogUrl', upstream?.modelCatalogUrl ?? '');
   (form.elements.namedItem('key') as HTMLInputElement).required = !upstream;
   $('upstream-title').textContent = upstream ? '编辑上游' : '添加上游'; $('edit-key-hint').hidden = !upstream;
   refreshSelects();
@@ -224,7 +225,7 @@ $<HTMLDialogElement>('created-dialog').addEventListener('close', () => { $<HTMLT
 $<HTMLDialogElement>('upstream-dialog').addEventListener('close', () => {
   $<HTMLInputElement>('upstream-key').value = ''; setUpstreamKeyVisible(false);
 });
-interface AuthTest { results: { authType: string; status: number | null; outcome: 'available' | 'rejected' | 'unknown'; message: string }[] }
+interface AuthTest { results: { authType: string; status: number | null; outcome: 'available' | 'rejected' | 'unknown'; message: string; models?: string[] }[] }
 const upstreamForm = $<HTMLFormElement>('upstream-form');
 upstreamForm.addEventListener('input', () => { $('auth-test-results').hidden = true; });
 $('test-auth').addEventListener('click', () => void action(async () => {
@@ -239,6 +240,16 @@ $('test-auth').addEventListener('click', () => void action(async () => {
       const name = item.authType === 'bearer' ? 'Authorization: Bearer' : 'x-api-key';
       const status = item.status === null ? '' : ' · HTTP ' + item.status;
       panel.append(node('p', name + '：' + item.message + status, 'auth-result ' + item.outcome));
+      if (item.models !== undefined) {
+        panel.append(node('p', `返回模型（${item.models.length}）`, 'hint'));
+        if (!item.models.length) panel.append(node('p', '模型列表为空。', 'hint'));
+        else {
+          const list = node('ul', undefined, 'auth-models');
+          list.setAttribute('aria-label', `${name} 返回的模型`);
+          item.models.forEach(model => list.append(node('li', model)));
+          panel.append(list);
+        }
+      }
     }
     const available = result.results.filter(item => item.outcome === 'available');
     if (available.length === 1) {
