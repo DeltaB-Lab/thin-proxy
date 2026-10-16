@@ -18,6 +18,7 @@ export interface Upstream extends EncryptedKey {
   id: string;
   name: string;
   baseUrl: string;
+  modelCatalogUrl?: string;
   authType: AuthType;
   healthRevision?: number;
   faultUntil?: number;

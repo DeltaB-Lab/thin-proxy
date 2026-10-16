@@ -63,6 +63,47 @@ describe('key service status', () => {
 });
 
 describe('ordered upstream cooldown', () => {
+  const catalogRequest = () => new Request('https://relay.example/backend-api/codex/models?client_version=test', { headers: { Authorization: `Bearer ${token}` } });
+  it('uses each selected upstream catalog and credentials, including bound and default routes', async () => {
+    state.config.upstreams = upstreams.map(u => ({ ...u, modelCatalogUrl: `https://catalog-${u.id}.example/list` }));
+    fetchMock.mockImplementation(async () => new Response('ok'));
+    await proxy(catalogRequest(), env);
+    fetchMock.mockResolvedValueOnce(new Response('failed', { status: 503 }));
+    await proxy(request(), env); // Conversation failure moves subsequent catalog requests to B.
+    await proxy(catalogRequest(), env);
+    state.config.accessKeys[0].upstreamIds = ['a'];
+    await proxy(catalogRequest(), env);
+    state.config.accessKeys[0].upstreamIds = null;
+    await proxy(catalogRequest(), env);
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
+      'https://catalog-a.example/list?client_version=test', 'https://a.example/gateway/v1/messages?x=1&x=2',
+      'https://catalog-b.example/list?client_version=test', 'https://catalog-a.example/list?client_version=test',
+      'https://catalog-c.example/list?client_version=test'
+    ]);
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBe('Bearer secret-a');
+    const bHeaders = new Headers(fetchMock.mock.calls[2][1].headers);
+    expect(bHeaders.get('x-api-key')).toBe('secret-b'); expect(bHeaders.has('Authorization')).toBe(false);
+    expect(recordUpstreamFault).toHaveBeenCalledTimes(1);
+  });
+  it.each([false, true])('does not cool conversation routes after catalog HTTP, connection or timeout failures (override=%s)', async override => {
+    if (override) state.config.upstreams = upstreams.map(u => ({ ...u, modelCatalogUrl: `https://catalog-${u.id}.example/list` }));
+    const response = new Response('catalog unauthorized', { status: 401, headers: { 'X-Catalog': 'original' } });
+    fetchMock.mockResolvedValueOnce(response).mockRejectedValueOnce(new Error('connection refused'))
+      .mockImplementationOnce((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      })).mockResolvedValueOnce(new Response('conversation ok'));
+    expect(await proxy(catalogRequest(), env)).toBe(response);
+    await expect(proxy(catalogRequest(), env)).rejects.toMatchObject({ status: 502 });
+    await expect(proxy(catalogRequest(), { ...env, UPSTREAM_TIMEOUT_SECONDS: '0.01' })).rejects.toMatchObject({ status: 504 });
+    expect(await (await proxy(request(), env)).text()).toBe('conversation ok');
+    expect(new URL(fetchMock.mock.calls[3][0]).hostname).toBe('a.example');
+    expect(fetchMock).toHaveBeenCalledTimes(4); expect(recordUpstreamFault).not.toHaveBeenCalled();
+  });
+  it('rejects a runtime catalog loop before forwarding credentials', async () => {
+    state.config.upstreams = upstreams.map(u => ({ ...u, modelCatalogUrl: 'https://relay.example/backend-api/codex/models' }));
+    await expect(proxy(catalogRequest(), env)).rejects.toMatchObject({ status: 502, code: 'PROXY_LOOP' });
+    expect(fetchMock).not.toHaveBeenCalled(); expect(recordUpstreamFault).not.toHaveBeenCalled();
+  });
   it.each(['single', 'legacy', 'default', 'disabled-multi'] as const)('bypasses persisted faults and never reports direct-route failures: %s', async mode => {
     const key = state.config.accessKeys[0];
     state.config.activeUpstreamId = 'a';

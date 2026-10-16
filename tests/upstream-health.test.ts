@@ -13,6 +13,21 @@ beforeEach(() => {
   state = snapshot(1, {activeUpstreamId:'a',upstreams:structuredClone(upstreams),accessKeys:[]});
 });
 describe('cooldown state machine', () => {
+  it('routes catalog requests around faults without reserving probes or altering conversation health', () => {
+    const catalog = () => health.select(state, ['a','b'], 180_000, 30_000, false);
+    select(['a']).finish('failed');
+    expect(catalog().upstream.id).toBe('b');
+    expect(catalog().finish('failed')).toBe(false);
+    expect(select().upstream.id).toBe('b');
+    now += 180_000;
+    const pendingCatalog = catalog(); expect(pendingCatalog.upstream.id).toBe('a');
+    expect(catalog().finish('healthy')).toBe(false);
+    const probe = select(); expect(probe.upstream.id).toBe('a');
+    expect(select().upstream.id).toBe('b'); // A catalog success did not clear the expired fault.
+    expect(pendingCatalog.finish('failed')).toBe(false);
+    expect(catalog().upstream.id).toBe('b'); // A catalog failure did not release the conversation probe.
+    probe.finish('healthy'); expect(select().upstream.id).toBe('a');
+  });
   it('does not extend a local deadline for a second failure from the same generation', () => {
     const a = select(['a']); const b = select(['a']);
     expect(a.finish('failed')).toBe(true);

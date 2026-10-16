@@ -4,6 +4,7 @@ import type { Config, Env, Snapshot } from './types';
 export function snapshot(version: number, config: Config): Snapshot {
   if (!Number.isInteger(version) || !Array.isArray(config.upstreams) || !Array.isArray(config.accessKeys) ||
     config.upstreams.some(u => !Number.isSafeInteger(u.healthRevision ?? 0) || (u.healthRevision ?? 0) < 0 ||
+      (u.modelCatalogUrl !== undefined && typeof u.modelCatalogUrl !== 'string') ||
       !Number.isSafeInteger(u.faultUntil ?? 0) || (u.faultUntil ?? 0) < 0 ||
       (u.faultReason != null && typeof u.faultReason !== 'string')) ||
     (config.activeUpstreamId !== null && !config.upstreams.some(u => u.id === config.activeUpstreamId)) ||

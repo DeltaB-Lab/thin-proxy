@@ -6,11 +6,12 @@ import { HttpError, json } from './errors';
 import { keyFailoverEnabled, keyUpstreamIds } from './key-routing';
 import { clearUpstreamFault, readConfig, writeConfig } from './storage';
 import { getUpstreamHealth, upstreamCooldownSeconds } from './upstream-health';
-import { authType, baseUrl, field, invalid, managementBody, upstreamKey } from './validation';
+import { authType, baseUrl, field, invalid, managementBody, modelCatalogUrl, upstreamKey } from './validation';
 import type { AccessKey, Config, Env, Snapshot } from './types';
 
 const notFound = () => new HttpError(404, 'NOT_FOUND', '记录或接口不存在');
 const publicUpstream = (u: Config['upstreams'][number]) => ({ id: u.id, name: u.name, baseUrl: u.baseUrl, authType: u.authType, hasKey: true,
+  modelCatalogUrl: u.modelCatalogUrl ?? '',
   healthRevision: u.healthRevision ?? 0, faultUntil: u.faultUntil ?? 0, faultReason: u.faultReason ?? null });
 const publicKey = (key: AccessKey) => ({
   id: key.id, name: key.name, keyPrefix: key.keyPrefix, createdAt: key.createdAt,
@@ -129,6 +130,7 @@ export async function admin(request: Request, env: Env): Promise<Response> {
     if (config.upstreams.length >= 100) invalid('最多保存 100 个上游');
     const id = crypto.randomUUID();
     const u = { id, name: field(body.name, '名称'), baseUrl: baseUrl(body.baseUrl, request, env),
+      modelCatalogUrl: modelCatalogUrl(body.modelCatalogUrl, request, env),
       authType: authType(body.authType), ...await encryptKey(env, id, upstreamKey(body.key)) };
     config.upstreams.push(u);
     result = publicUpstream(u);
@@ -144,6 +146,10 @@ export async function admin(request: Request, env: Env): Promise<Response> {
       const old = JSON.stringify([u.baseUrl, u.authType, u.keyVersion, u.keyIv, u.keyCiphertext]);
       if (body.name !== undefined) u.name = field(body.name, '名称');
       if (body.baseUrl !== undefined) u.baseUrl = baseUrl(body.baseUrl, request, env);
+      if (body.modelCatalogUrl !== undefined) {
+        const catalog = modelCatalogUrl(body.modelCatalogUrl, request, env);
+        if (catalog) u.modelCatalogUrl = catalog; else delete u.modelCatalogUrl;
+      }
       if (body.authType !== undefined) u.authType = authType(body.authType);
       if (body.key !== undefined && body.key !== '') Object.assign(u, await encryptKey(env, u.id, upstreamKey(body.key)));
       if (old !== JSON.stringify([u.baseUrl, u.authType, u.keyVersion, u.keyIv, u.keyCiphertext])) {
