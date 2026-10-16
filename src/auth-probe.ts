@@ -1,7 +1,7 @@
 import type { AuthType } from './types';
 
-type Probe = { status: number | null; modelList: boolean };
-export type AuthProbeResult = { authType: AuthType; status: number | null; outcome: 'available' | 'rejected' | 'unknown'; message: string };
+type Probe = { status: number | null; modelList: boolean; models?: string[] };
+export type AuthProbeResult = { authType: AuthType; status: number | null; outcome: 'available' | 'rejected' | 'unknown'; message: string; models?: string[] };
 async function probe(url: string, headers: HeadersInit): Promise<Probe> {
   try {
     const response = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(10_000), cf: { cacheTtl: -1, cacheEverything: false } });
@@ -17,7 +17,11 @@ async function probe(url: string, headers: HeadersInit): Promise<Probe> {
         text += decoder.decode(part.value, { stream: true });
       }
       text += decoder.decode();
-      try { const data = JSON.parse(text); result.modelList = Array.isArray(data?.data) && data.data.every((m: unknown) => m !== null && typeof m === 'object' && 'id' in m && typeof m.id === 'string'); } catch {}
+      try {
+        const data = JSON.parse(text);
+        result.modelList = Array.isArray(data?.data) && data.data.every((m: unknown) => m !== null && typeof m === 'object' && 'id' in m && typeof m.id === 'string');
+        if (result.modelList) result.models = [...new Set<string>(data.data.map((m: { id: string }) => m.id))];
+      } catch {}
       return result;
     } finally { await reader.cancel().catch(() => {}); }
   } catch { return { status: null, modelList: false }; }
@@ -30,9 +34,10 @@ export async function testUpstreamAuth(base: string, key: string) {
     probe(endpoint, { Accept: 'application/json', 'x-api-key': key })
   ]);
   const results: AuthProbeResult[] = ([['bearer', bearer], ['x-api-key', apiKey]] as const).map(([authType, result]) => {
-    if (result.modelList && (anonymous.status === 401 || anonymous.status === 403)) return { authType, status: result.status, outcome: 'available', message: '模型列表鉴权通过' };
-    if (result.status === 401 || result.status === 403) return { authType, status: result.status, outcome: 'rejected', message: '请求被拒绝，请检查密钥、权限或鉴权方式' };
-    return { authType, status: result.status, outcome: 'unknown', message: result.status === null ? '连接失败或超时' : result.modelList ? '无密钥对照未确认鉴权，无法判断' : '接口未返回模型列表，无法判断' };
+    const common = { authType, status: result.status, ...(result.models !== undefined ? { models: result.models } : {}) };
+    if (result.modelList && (anonymous.status === 401 || anonymous.status === 403)) return { ...common, outcome: 'available', message: '模型列表鉴权通过' };
+    if (result.status === 401 || result.status === 403) return { ...common, outcome: 'rejected', message: '请求被拒绝，请检查密钥、权限或鉴权方式' };
+    return { ...common, outcome: 'unknown', message: result.status === null ? '连接失败或超时' : result.modelList ? '无密钥对照未确认鉴权，无法判断' : '接口未返回模型列表，无法判断' };
   });
   return { endpoint, anonymousStatus: anonymous.status, results };
 }

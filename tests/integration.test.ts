@@ -143,6 +143,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     const result = await value(await admin('/test-auth', 'POST', {id:upstreamA,baseUrl:'https://a.example/gateway',key:''}));
     expect(result.anonymousStatus).toBe(401);
     expect(result.results.map((r: any) => r.outcome)).toEqual(['available','rejected']);
+    expect(result.results.map((r: any) => r.models)).toEqual([['test-model'], undefined]);
     expect(JSON.stringify(result)).not.toContain('upstream-secret');
     expect(await value(await admin('/config'))).toEqual(before);
     const b = await value(await admin('/test-auth', 'POST', {baseUrl:'https://b.example',key:'upstream-secret-B'}));
