@@ -17,10 +17,29 @@ describe('upstream auth detection', () => {
     expect(result.endpoint).toBe('https://up.example/v1/models');
     expect(mock).toHaveBeenCalledTimes(3);
     expect(result.results.map(r=>r.outcome)).toEqual(['available','available']);
+    expect(result.results.map(r=>r.models)).toEqual([['model'],['model']]);
   });
   it('does not declare public model lists authenticated', async () => {
     vi.stubGlobal('fetch',vi.fn(async()=>models()));
-    expect((await testUpstreamAuth('https://up.example','secret')).results.every(r=>r.outcome==='unknown')).toBe(true);
+    const result = await testUpstreamAuth('https://up.example','secret');
+    expect(result.results.every(r=>r.outcome==='unknown')).toBe(true);
+    expect(result.results.map(r=>r.models)).toEqual([['model'],['model']]);
+  });
+  it('returns only model IDs per auth method, deduplicating without exposing upstream metadata', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ data: [{ id: 'model-b', metadata: 'private' }, { id: 'model-a' }, { id: 'model-b' }] }))
+      .mockResolvedValueOnce(Response.json({ data: [] })));
+    const result = await testUpstreamAuth('https://up.example', 'secret');
+    expect(result.results.map(r => r.models)).toEqual([['model-b', 'model-a'], []]);
+    expect(JSON.stringify(result)).not.toContain('private');
+  });
+  it('omits model lists for invalid payloads and rejected responses', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ data: [{ id: 'valid' }, { id: 42 }] }))
+      .mockResolvedValueOnce(Response.json({ data: [{ id: 'not-authorized' }] }, { status: 403 })));
+    const result = await testUpstreamAuth('https://up.example', 'secret');
+    expect(result.results.map(r => r.models)).toEqual([undefined, undefined]);
+    expect(result.results.map(r => r.outcome)).toEqual(['unknown', 'rejected']);
   });
   it.each([302,404,429,500])('does not treat HTTP %i as an unsupported auth method', async status => {
     vi.stubGlobal('fetch',vi.fn(async()=>new Response(null,{status})));

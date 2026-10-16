@@ -225,7 +225,7 @@ $<HTMLDialogElement>('created-dialog').addEventListener('close', () => { $<HTMLT
 $<HTMLDialogElement>('upstream-dialog').addEventListener('close', () => {
   $<HTMLInputElement>('upstream-key').value = ''; setUpstreamKeyVisible(false);
 });
-interface AuthTest { results: { authType: string; status: number | null; outcome: 'available' | 'rejected' | 'unknown'; message: string }[] }
+interface AuthTest { results: { authType: string; status: number | null; outcome: 'available' | 'rejected' | 'unknown'; message: string; models?: string[] }[] }
 const upstreamForm = $<HTMLFormElement>('upstream-form');
 upstreamForm.addEventListener('input', () => { $('auth-test-results').hidden = true; });
 $('test-auth').addEventListener('click', () => void action(async () => {
@@ -240,6 +240,16 @@ $('test-auth').addEventListener('click', () => void action(async () => {
       const name = item.authType === 'bearer' ? 'Authorization: Bearer' : 'x-api-key';
       const status = item.status === null ? '' : ' · HTTP ' + item.status;
       panel.append(node('p', name + '：' + item.message + status, 'auth-result ' + item.outcome));
+      if (item.models !== undefined) {
+        panel.append(node('p', `返回模型（${item.models.length}）`, 'hint'));
+        if (!item.models.length) panel.append(node('p', '模型列表为空。', 'hint'));
+        else {
+          const list = node('ul', undefined, 'auth-models');
+          list.setAttribute('aria-label', `${name} 返回的模型`);
+          item.models.forEach(model => list.append(node('li', model)));
+          panel.append(list);
+        }
+      }
     }
     const available = result.results.filter(item => item.outcome === 'available');
     if (available.length === 1) {
