@@ -2,6 +2,14 @@
 
 一个部署在 Cloudflare Workers 上的轻量 API 反向代理，使用 D1 保存配置。客户端固定代理地址和转发 Key，在网页中切换上游地址与密钥，无需反复修改客户端。
 
+## 部署
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/DeltaB-Lab/thin-proxy)
+
+点击按钮，在自己的 Cloudflare 账号中创建 Worker 和 D1，按提示设置 `ADMIN_KEY` 与 `UPSTREAM_KEY_ENCRYPTION_KEY` 两个随机密钥。默认使用 workers.dev 地址；部署命令会先初始化 D1，再发布服务，无需填写原作者的账号或域名。按钮要求源仓库为 public。
+
+密钥生成方式、手动部署和已有生产环境的独立配置见[部署文档](docs/04-自动部署.md)。
+
 ## 怎么用
 
 1. 部署后打开 `https://你的域名/_relay/`，使用 `ADMIN_KEY` 登录。
@@ -49,12 +57,6 @@ API Key: sk-...（网页创建的转发 Key，含前缀共 64 个字符；已有
 
 透传指应用层内容不改写，不保证底层网络分块、压缩或 WebSocket 帧边界一致。
 
-## 部署
-
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/DeltaB-Lab/thin-proxy)
-
-**按钮要求公开仓库；本仓库目前为私有，暂不能通过该按钮部署。** 发布为公开仓库后，还需适配自己的账号、域名、两个 Secret 和 D1 初始化。当前手动部署及按钮准备步骤见[部署文档](docs/04-自动部署.md)。
-
 ## 本地运行
 
 需要 Node.js 22.12+。
@@ -69,3 +71,7 @@ npm run dev
 打开 `http://localhost:8787/_relay/`，使用生成的 `.env` 中的 `ADMIN_KEY` 登录。请保管好 `.env`，不要提交密钥。
 
 更多说明：[需求](docs/01-需求文档.md) · [设计](docs/02-设计文档.md) · [架构](docs/03-架构文档.md)。
+
+## 许可证
+
+[MIT](LICENSE)

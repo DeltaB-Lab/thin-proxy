@@ -7,4 +7,5 @@ dist/
 !.env.example
 coverage/
 *.log
-.idea
+.idea/
+.wrangler.production.json
