@@ -19,6 +19,7 @@
   }],
   "vars": {
     "CONFIG_CACHE_TTL_SECONDS": "30",
+    "UPSTREAM_TIMEOUT_SECONDS": "300",
     "UPSTREAM_COOLDOWN_SECONDS": "1800",
     "SELF_HOSTS": ""
   },

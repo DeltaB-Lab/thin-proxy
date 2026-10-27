@@ -239,6 +239,32 @@ describe('ordered upstream cooldown', () => {
     });
     expect(await (await proxy(original, env)).text()).toBe('failed'); expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+  it.each([undefined, '300'])('waits beyond 90 seconds and aborts at 300 seconds (timeout=%s)', async timeout => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      state.config.accessKeys[0].failoverEnabled = false;
+      let started!: () => void;
+      const forwarding = new Promise<void>(resolve => { started = resolve; });
+      fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        started();
+      }));
+      const result = proxy(request(), { ...env, UPSTREAM_TIMEOUT_SECONDS: timeout }).catch(error => error);
+      await forwarding;
+      const signal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(209_999);
+      expect(signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toMatchObject({ status: 504, code: 'UPSTREAM_TIMEOUT' });
+      expect(signal.aborted).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(recordUpstreamFault).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('returns 504 on a header timeout, then selects the next upstream on a new request', async () => {
     fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => new Promise<Response>((_resolve,reject) => {
       init.signal!.addEventListener('abort', () => reject(new Error('aborted')), {once:true});

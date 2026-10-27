@@ -57,7 +57,7 @@ export async function proxy(request: Request, env: Env, context?: Pick<Execution
   if (accessKey.enabled === false) throw new HttpError(403, 'KEY_DISABLED', '此转发 Key 已停止服务');
   const ids = keyUpstreamIds(accessKey) ?? (state.config.activeUpstreamId ? [state.config.activeUpstreamId] : []);
   if (!ids.length) throw new HttpError(409, 'NO_ACTIVE_UPSTREAM', '请为此 Key 指定上游或选择默认上游');
-  const timeoutSeconds = Number(env.UPSTREAM_TIMEOUT_SECONDS ?? '30');
+  const timeoutSeconds = Number(env.UPSTREAM_TIMEOUT_SECONDS ?? '300');
   if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds > 300) throw new Error('Invalid upstream timeout');
   const failover = keyFailoverEnabled(accessKey);
   const incoming = new URL(request.url);

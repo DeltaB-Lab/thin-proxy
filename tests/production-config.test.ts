@@ -16,7 +16,7 @@ const template = {
   name: 'thin-proxy', workers_dev: true, preview_urls: false, main: 'src/index.ts',
   compatibility_date: '2026-08-06', assets: { directory: './dist', binding: 'ASSETS' },
   d1_databases: [{ binding: 'DB', database_name: 'thin-proxy', database_id: '00000000-0000-0000-0000-000000000000', migrations_dir: 'migrations' }],
-  vars: { CONFIG_CACHE_TTL_SECONDS: '30', SELF_HOSTS: '' }, observability: { enabled: true }
+  vars: { CONFIG_CACHE_TTL_SECONDS: '30', UPSTREAM_TIMEOUT_SECONDS: '300', SELF_HOSTS: '' }, observability: { enabled: true }
 };
 
 describe('existing production deployment', () => {
