@@ -6,11 +6,46 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/DeltaB-Lab/thin-proxy)
 
+无需提前手动 fork。选择自己的 GitHub 账号后，Cloudflare 会将本项目源码复制到你账号下的新仓库，再连接这份副本，在你自己的 Cloudflare 账号中部署 Worker 和 D1。副本可以设为私有；后续自动部署跟随你自己的仓库，而不是本项目仓库。流程见 [Cloudflare 官方说明](https://developers.cloudflare.com/workers/platform/deploy-buttons/)。
+
 点击按钮，在自己的 Cloudflare 账号中选择独立的项目名称，并为新部署新建 D1 数据库。按提示设置 `ADMIN_KEY` 与 `UPSTREAM_KEY_ENCRYPTION_KEY` 两个随机密钥，替换示例值。默认使用 workers.dev 地址；部署命令会先初始化 D1，再发布服务，无需填写原作者的账号或域名。
 
 账号内已有同名数据库时，Cloudflare 可能默认选中它；请在 D1 下拉框选择「+ 新建」，避免多个实例共用配置和密钥数据。首次部署建议关闭「启用预览构建」。
 
 密钥生成方式、手动部署和已有生产环境的独立配置见[部署文档](docs/04-自动部署.md)。
+
+### 同步项目更新
+
+本项目发布新提交时，你的副本和线上服务不会自动更新。这里的「上游」指 `DeltaB-Lab/thin-proxy` 代码仓库，与代理配置中的 API 上游服务无关。一键部署创建的副本不一定具有 GitHub fork 关系或「Sync fork」按钮；可以按下面的通用 Git 流程同步。
+
+先将**自己的仓库**克隆到本地，确认 `origin` 指向自己的副本、工作区没有未提交改动。升级前备份 D1 和原加密密钥，并检查更新内容及新增数据库迁移。
+
+```sh
+# 仅首次添加；已有 upstream 时先用 git remote -v 核对地址
+git remote add upstream https://github.com/DeltaB-Lab/thin-proxy.git
+git switch main
+git pull --ff-only origin main
+git fetch upstream
+# 每次同步使用一个尚不存在的更新分支名
+git switch -c update-upstream
+git merge --no-commit --no-ff upstream/main
+```
+
+如果提示 `refusing to merge unrelated histories`，说明副本与上游没有共同提交，可改用 `git merge --no-commit --no-ff --allow-unrelated-histories upstream/main` 建立首次合并关系。遇到冲突时先解决，并用 `git add <已解决的文件>` 标记；如要取消本次合并，使用 `git merge --abort`。
+
+审查合并结果，保留 `wrangler.jsonc` 中**自己的 Worker 名称、D1 名称和 ID、域名及自定义变量**，不要用模板占位值覆盖实例配置。继续使用原有的 `ADMIN_KEY`、`UPSTREAM_KEY_ENCRYPTION_KEY` 和生产构建变量。审查中调整过的文件也需用 `git add` 暂存；确认有更新且冲突已解决后：
+
+```sh
+npm ci
+npm run check
+git diff --cached
+git commit -m "chore: sync upstream"
+git switch main
+git merge --ff-only update-upstream
+git push origin main
+```
+
+推送到自己仓库中 Cloudflare 连接的生产分支（默认 `main`）后，Workers Builds 会自动构建并部署；在 Cloudflare 确认构建成功，再检查管理页和原有配置。若生产分支不是 `main`，相应替换上述自己的分支名，上游仍使用 `upstream/main`。同步时不用再次点击一键部署按钮，也不用重新创建 D1 或生成密钥。
 
 ## 怎么用
 
