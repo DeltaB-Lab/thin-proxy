@@ -39,7 +39,7 @@
   "cloudflare": {
     "bindings": {
       "DB": {
-        "description": "Stores upstream configuration and encrypted access keys. A new D1 database is created in your account."
+        "description": "Stores upstream configuration and encrypted access keys. For a new deployment, choose **Create new** and a unique database name; do not reuse another instance's database."
       },
       "ADMIN_KEY": {
         "description": "Management login password: generate at least 32 random characters, for example with `openssl rand -hex 32`. Keep a backup."

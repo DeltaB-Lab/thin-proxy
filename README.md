@@ -6,7 +6,9 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/DeltaB-Lab/thin-proxy)
 
-点击按钮，在自己的 Cloudflare 账号中创建 Worker 和 D1，按提示设置 `ADMIN_KEY` 与 `UPSTREAM_KEY_ENCRYPTION_KEY` 两个随机密钥。默认使用 workers.dev 地址；部署命令会先初始化 D1，再发布服务，无需填写原作者的账号或域名。按钮要求源仓库为 public。
+点击按钮，在自己的 Cloudflare 账号中选择独立的项目名称，并为新部署新建 D1 数据库。按提示设置 `ADMIN_KEY` 与 `UPSTREAM_KEY_ENCRYPTION_KEY` 两个随机密钥，替换示例值。默认使用 workers.dev 地址；部署命令会先初始化 D1，再发布服务，无需填写原作者的账号或域名。
+
+账号内已有同名数据库时，Cloudflare 可能默认选中它；请在 D1 下拉框选择「+ 新建」，避免多个实例共用配置和密钥数据。首次部署建议关闭「启用预览构建」。
 
 密钥生成方式、手动部署和已有生产环境的独立配置见[部署文档](docs/04-自动部署.md)。
 
