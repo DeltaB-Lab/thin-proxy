@@ -53,8 +53,14 @@ export const encryptKey = (env: Env, id: string, value: string) => encryptValue(
 export const decryptKey = (env: Env, upstream: Upstream) => decryptValue(env, 'upstream', upstream.id, upstream);
 export const encryptAccessKey = (env: Env, id: string, value: string) => encryptValue(env, 'access-key', id, value);
 export const decryptAccessKey = (env: Env, id: string, encrypted: EncryptedKey) => decryptValue(env, 'access-key', id, encrypted);
+export function validateAdminSecret(secret: string): void {
+  if (typeof secret !== 'string' || secret.length < 32 || secret.length > 1024 || secret.trim() !== secret ||
+    /^(?:replace[-_ ]|change[-_ ]?me|your[-_ ])/i.test(secret) || new Set(secret).size < 8) {
+    throw new Error('Invalid admin configuration');
+  }
+}
 export async function signingKey(secret: string): Promise<CryptoKey> {
-  if (!secret || secret.length < 32) throw new Error('Invalid admin configuration');
+  validateAdminSecret(secret);
   const material = await crypto.subtle.importKey('raw', encoder.encode(secret), 'HKDF', false, ['deriveKey']);
   return crypto.subtle.deriveKey({
     name: 'HKDF', hash: 'SHA-256', salt: encoder.encode('worker-relay'),

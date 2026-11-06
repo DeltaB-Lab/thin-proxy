@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
 const require = createRequire(import.meta.url);
-const supportedVersion = '4.151.0';
+const supportedVersion = '4.158.0';
 const original = [
   'function getListAppliedMigrationsQuery(migrationsTableName) {',
   '  const escapedTableName = escapeIdentifier(migrationsTableName);',

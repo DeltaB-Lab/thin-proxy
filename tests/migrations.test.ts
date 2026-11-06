@@ -25,8 +25,8 @@ describe('Wrangler migration query patch', () => {
   it('replaces only the wildcard projection and remains idempotent', () => {
     const original = source.replace('return `SELECT id, name, applied_at\n\t\tFROM ${escapedTableName}', 'return `SELECT *\n\t\tFROM ${escapedTableName}');
     expect(original).not.toBe(source);
-    expect(patchMigrationQuery(original, '4.151.0')).toBe(source);
-    expect(patchMigrationQuery(source, '4.151.0')).toBe(source);
+    expect(patchMigrationQuery(original, '4.158.0')).toBe(source);
+    expect(patchMigrationQuery(source, '4.158.0')).toBe(source);
     const queryFunction = source.match(/function getListAppliedMigrationsQuery\(migrationsTableName\) \{[\s\S]*?\n\}/)![0];
     const query = runInNewContext(`${queryFunction}; getListAppliedMigrationsQuery('d1_migrations')`, {
       escapeIdentifier: (name: string) => `"${name.replace(/"/g, '""')}"`
@@ -35,9 +35,9 @@ describe('Wrangler migration query patch', () => {
   });
 
   it('blocks unreviewed versions, changed helpers and ambiguous matches', () => {
-    expect(() => patchMigrationQuery(source, '4.152.0')).toThrow('review the patch');
-    expect(() => patchMigrationQuery(source.replace('SELECT id, name, applied_at', 'SELECT name'), '4.151.0')).toThrow('refusing to run');
-    expect(() => patchMigrationQuery(source + source, '4.151.0')).toThrow('refusing to run');
+    expect(() => patchMigrationQuery(source, '4.159.0')).toThrow('review the patch');
+    expect(() => patchMigrationQuery(source.replace('SELECT id, name, applied_at', 'SELECT name'), '4.158.0')).toThrow('refusing to run');
+    expect(() => patchMigrationQuery(source + source, '4.158.0')).toThrow('refusing to run');
   });
 });
 

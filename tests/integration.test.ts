@@ -2,7 +2,7 @@ import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import { build } from 'esbuild';
 import { readFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
-import { Miniflare } from 'miniflare';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 
 let mf: Miniflare;
 const origin = 'https://relay.example';
@@ -61,27 +61,24 @@ async function value(response: Awaited<ReturnType<typeof admin>>) {
 async function proxy(path: string, key = keyA, options: Record<string, any> = {}) {
   return mf.dispatchFetch(`${origin}${path}`, { redirect: 'manual', ...options, headers: { Authorization: `Bearer ${key}`, ...options.headers } });
 }
-async function waitForFault(id: string) {
-  // Fault persistence uses waitUntil and can finish after the client sees the error.
-  await expect.poll(async () => (await value(await admin('/upstreams'))).find((u:any) => u.id === id).faultUntil).toBeGreaterThan(Date.now());
-}
 beforeAll(async () => {
   const bundled = await build({ entryPoints: ['src/index.ts'], bundle: true, write: false, format: 'esm', target: 'es2022' });
-  mf = new Miniflare({
+  mf = new Miniflare(convertV4MiniflareOptions({
     workers: [{ name: 'relay', modules: true, script: bundled.outputFiles[0].text, compatibilityDate: '2026-08-06', compatibilityFlags: ['enable_request_signal'],
       d1Databases: { DB: 'integration-db' },
+      ratelimits: { ADMIN_LOGIN_LIMITER: { namespace_id: '1', simple: { limit: 5, period: 60 } } },
       bindings: { ADMIN_KEY: adminKey, UPSTREAM_KEY_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), CONFIG_CACHE_TTL_SECONDS: '30' },
       outboundService: 'upstream',
       serviceBindings: { ASSETS: async () => new Response('<html>management</html>', { headers: { 'Content-Type': 'text/html' } }) }
     }, { name: 'upstream', modules: true, script: upstreamScript, compatibilityDate: '2026-08-06' }]
-  });
+  }));
   const db = await mf.getD1Database('DB', 'relay');
   const migration = await readFile('migrations/0001_config.sql', 'utf8');
   for (const statement of migration.split(';').filter(s => s.trim())) await db.prepare(statement).run();
 }, 60_000);
 afterAll(async () => { await mf?.dispose(); });
 
-describe.sequential('real Workers runtime: admin and opaque reverse proxy', () => {
+describe('real Workers runtime: admin and opaque reverse proxy', { concurrent: false }, () => {
   it('requires admin login and enforces same-origin writes', async () => {
     expect((await admin('/config', 'GET', undefined, false)).status).toBe(401);
     expect((await admin('/session', 'POST', { key: 'wrong' }, false)).status).toBe(401);
@@ -90,7 +87,6 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     const response = await admin('/session', 'POST', { key: adminKey }, false);
     expect(response.status).toBe(200); cookie = response.headers.get('set-cookie')!.split(';')[0];
     expect(response.headers.get('set-cookie')).toContain('HttpOnly');
-    expect((await value(await admin('/config'))).upstreamCooldownSeconds).toBe(1800);
     expect((await proxy('/v1/messages', adminKey)).status).toBe(401);
   });
   it('creates independent forwarding keys without exposing hashes in listings', async () => {
@@ -134,7 +130,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     expect((await admin(`/upstreams/${upstreamA}`, 'PATCH', {
       name: 'A', baseUrl: 'https://a.example/gateway', authType: 'bearer', key: ''
     })).status).toBe(200);
-    expect((await admin(`/keys/${idA}`, 'PATCH', { upstreamIds: null })).status).toBe(200);
+    expect((await admin(`/keys/${idA}`, 'PATCH', { upstreamId: null })).status).toBe(200);
     expect(await db.prepare('SELECT version, config_json, updated_at FROM config WHERE id=1').first()).toEqual(before);
     expect(await value(await admin('/snapshot'))).toEqual(combined);
   });
@@ -213,13 +209,12 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     });
     expect(failed.status).toBe(403); expect(failed.body).toBe('handshake refused');
     expect((await value(await proxy('/echo', keyB))).url).toBe('https://b.example/echo');
-    expect((await value(await admin('/upstreams'))).find((u:any) => u.id === upstreamB).faultUntil).toBe(0);
   });
   it('routes bound keys independently with the correct URL and credentials, even without a default', async () => {
     const pinned = await value(await admin('/keys', 'POST', { name: 'Pinned B', upstreamId: upstreamB }));
-    expect(pinned.upstreamIds).toEqual([upstreamB]); expect(pinned.keyHash).toBeUndefined();
+    expect(pinned.upstreamId).toBe(upstreamB); expect(pinned.keyHash).toBeUndefined();
     const updated = await value(await admin(`/keys/${idA}`, 'PATCH', { upstreamId: upstreamA }));
-    expect(updated.upstreamIds).toEqual([upstreamA]); expect(updated.key).toBeUndefined(); expect(updated.keyHash).toBeUndefined();
+    expect(updated.upstreamId).toBe(upstreamA); expect(updated.key).toBeUndefined(); expect(updated.keyHash).toBeUndefined();
     await value(await admin('/active-upstream', 'PUT', { id: null }));
     expect((await proxy('/echo', keyB)).status).toBe(409);
     for (const [token, url, header, credential, removed] of [
@@ -229,7 +224,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
       const echo = await value(await mf.dispatchFetch(`${origin}/echo`, { headers: { 'x-api-key': token } }));
       expect(echo.url).toBe(url); expect(echo.headers[header]).toBe(credential); expect(echo.headers[removed]).toBeUndefined();
     }
-    expect((await value(await admin('/keys'))).find((k: any) => k.id === idA).upstreamIds).toEqual([upstreamA]);
+    expect((await value(await admin('/keys'))).find((k: any) => k.id === idA).upstreamId).toBe(upstreamA);
     const deletion = await admin(`/upstreams/${upstreamA}`, 'DELETE');
     expect(deletion.status).toBe(409); expect((await deletion.json() as any).error.code).toBe('UPSTREAM_IN_USE');
     await value(await admin('/active-upstream', 'PUT', { id: upstreamB }));
@@ -258,7 +253,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     await value(await admin('/active-upstream', 'PUT', { id: upstreamB }));
   });
   it('renames keys without changing their credentials or routes and updates name and routes atomically', async () => {
-    const record = await value(await admin('/keys', 'POST', { name: 'Before rename', upstreamIds: [upstreamA, upstreamB] }));
+    const record = await value(await admin('/keys', 'POST', { name: 'Before rename', upstreamId: upstreamA }));
     const db = await mf.getD1Database('DB', 'relay');
     const storedKey = async () => {
       const row = await db.prepare('SELECT config_json FROM config WHERE id=1').first<{config_json:string}>();
@@ -272,13 +267,13 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     expect((await value(await proxy('/echo', record.key))).url).toBe('https://a.example/gateway/echo');
     const configBeforeFailures = await value(await admin('/config'));
     for (const name of ['', '   ', 'x'.repeat(101), null, 42]) {
-      expect((await admin(`/keys/${record.id}`, 'PATCH', { name, upstreamIds: [upstreamB] })).status).toBe(400);
+      expect((await admin(`/keys/${record.id}`, 'PATCH', { name, upstreamId: upstreamB })).status).toBe(400);
     }
-    expect((await admin(`/keys/${record.id}`, 'PATCH', { name: 'Must not persist', upstreamIds: ['missing'] })).status).toBe(404);
+    expect((await admin(`/keys/${record.id}`, 'PATCH', { name: 'Must not persist', upstreamId: 'missing' })).status).toBe(404);
     expect(await value(await admin('/config'))).toEqual(configBeforeFailures);
     expect(await storedKey()).toEqual({ ...before, name: '我的电脑' });
-    const updated = await value(await admin(`/keys/${record.id}`, 'PATCH', { name: '服务器', upstreamIds: [upstreamB, upstreamA] }));
-    expect(updated).toMatchObject({ name: '服务器', upstreamIds: [upstreamB, upstreamA] });
+    const updated = await value(await admin(`/keys/${record.id}`, 'PATCH', { name: '服务器', upstreamId: upstreamB }));
+    expect(updated).toMatchObject({ name: '服务器', upstreamId: upstreamB });
     expect((await value(await admin('/keys'))).find((key: any) => key.id === record.id)).toEqual(updated);
     expect((await value(await proxy('/echo', record.key))).url).toBe('https://b.example/echo');
     await value(await admin(`/keys/${record.id}`, 'DELETE'));
@@ -299,50 +294,9 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     expect(await value(await admin('/config'))).toEqual(before);
     expect(await value(await admin('/keys'))).toEqual(keys);
   });
-  it('saves ordered routes, cools across client retries for HTTP/SSE/WebSocket, and protects referenced upstreams', async () => {
-    const record = await value(await admin('/keys', 'POST', { name: 'Ordered', upstreamIds: [upstreamA, upstreamB] }));
-    expect(record.upstreamIds).toEqual([upstreamA, upstreamB]);
-    expect(record.encryptedKey).toBeUndefined(); expect(record.canReveal).toBe(true);
-    expect((await value(await proxy('/echo', record.key))).url).toBe('https://a.example/gateway/echo');
-    const bytes = Buffer.from([0, 255, 42, 13, 10, 128]);
-    const first = await proxy('/echo?fail=a.example', record.key, {method:'POST',body:bytes});
-    expect(first.status).toBe(503); expect(await first.text()).toBe('failed at a.example');
-    const echo = await value(await proxy('/echo?fail=a.example', record.key, {method:'POST',body:bytes,headers:{'Content-Type':'application/octet-stream'}}));
-    expect(echo.url).toBe('https://b.example/echo?fail=a.example'); expect(echo.bytes).toEqual([...bytes]);
-    expect(echo.headers['x-api-key']).toBe('upstream-secret-B'); expect(echo.headers.authorization).toBeUndefined();
-    const stream = await proxy('/sse?fail=a.example', record.key);
-    expect(stream.headers.get('x-upstream')).toBe('b.example'); expect(await stream.text()).toContain('[DONE]');
-    const ws = await proxy('/ws?fail=a.example', record.key, {headers:{Upgrade:'websocket'}});
-    expect(ws.status).toBe(101); expect(ws.headers.get('x-upstream')).toBe('b.example'); ws.webSocket!.accept();
-    const closed = new Promise(resolve => ws.webSocket!.addEventListener('close', resolve, {once:true}));
-    ws.webSocket!.close(1000, 'done'); await closed;
-    const last = await proxy('/echo?fail=a.example&fail=b.example', record.key);
-    expect(last.status).toBe(503); expect(await last.text()).toBe('failed at b.example');
-    await waitForFault(upstreamB);
-    await value(await admin(`/keys/${record.id}`, 'PATCH', {upstreamIds:[upstreamB,upstreamA]}));
-    const cooling = await proxy('/echo', record.key);
-    expect(cooling.status).toBe(503); expect(Number(cooling.headers.get('Retry-After'))).toBeGreaterThan(0);
-    expect((await cooling.json() as any).error.code).toBe('UPSTREAMS_COOLING_DOWN');
-    // Route and name edits retain health; new credentials reset only that upstream.
-    await value(await admin(`/keys/${record.id}`, 'PATCH', {name:'Renamed while cooling'}));
-    expect((await proxy('/echo', record.key)).status).toBe(503);
-    await value(await admin(`/upstreams/${upstreamB}`, 'PATCH', {key:'upstream-secret-B'}));
-    expect((await value(await proxy('/echo', record.key))).url).toBe('https://b.example/echo');
-    await value(await admin(`/upstreams/${upstreamA}`, 'PATCH', {key:'upstream-secret-A'}));
-    expect((await admin(`/upstreams/${upstreamA}`, 'DELETE')).status).toBe(409);
-    expect((await value(await admin('/keys'))).find((k:any) => k.id === record.id).upstreamIds).toEqual([upstreamB,upstreamA]);
-    const before = await value(await admin('/config'));
-    for (const upstreamIds of [[], [upstreamA,upstreamA], [42], 'a', false, ['missing'], Array(101).fill(upstreamA)]) {
-      const status = Array.isArray(upstreamIds) && upstreamIds[0] === 'missing' ? 404 : 400;
-      expect((await admin('/keys','POST',{name:'invalid',upstreamIds})).status).toBe(status);
-      expect((await admin(`/keys/${record.id}`,'PATCH',{upstreamIds})).status).toBe(status);
-    }
-    expect((await admin(`/keys/${record.id}`,'PATCH',{upstreamId:upstreamA,upstreamIds:[upstreamB]})).status).toBe(400);
-    expect(await value(await admin('/config'))).toEqual(before);
-    await value(await admin(`/keys/${record.id}`, 'DELETE'));
-  });
-  it('streams requests larger than 8 MiB with multiple configured upstreams', async () => {
-    const record = await value(await admin('/keys', 'POST', { name: 'Large upload', upstreamIds: [upstreamA, upstreamB] }));
+
+  it('streams requests larger than 8 MiB to the configured upstream', async () => {
+    const record = await value(await admin('/keys', 'POST', { name: 'Large upload', upstreamId: upstreamA }));
     const size = 9 * 1024 * 1024 + 17;
     let remaining = size;
     const body = new ReadableStream({pull(controller) {
@@ -378,17 +332,27 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     expect(stored.accessKeys.find((k:any) => k.id === idA).encryptedKey.keyCiphertext).toBeTruthy();
     // A pre-upgrade key has only a digest; its routing still works after upgrade.
     const legacy = stored.accessKeys.find((k:any) => k.id === idA); delete legacy.encryptedKey;
-    delete legacy.upstreamIds; legacy.upstreamId = upstreamA;
+    delete legacy.upstreamId;
+    legacy.upstreamIds = [upstreamA, upstreamB]; legacy.failoverEnabled = true;
+    Object.assign(stored.upstreams.find((u: any) => u.id === upstreamA), {
+      healthRevision: 3, faultUntil: Date.now() + 1_800_000, faultReason: 'HTTP 403'
+    });
     // The following management save must make a real change to publish this
     // externally edited fixture; no-op saves no longer refresh proxy caches.
     stored.activeUpstreamId = null;
     await db.prepare('UPDATE config SET config_json=?,version=version+1 WHERE id=1').bind(JSON.stringify(stored)).run();
-    expect((await value(await admin('/keys'))).find((k:any) => k.id === idA)).toMatchObject({canReveal:false,upstreamIds:[upstreamA]});
+    const beforeRead = await db.prepare('SELECT version, config_json FROM config WHERE id=1').first();
+    expect((await value(await admin('/keys'))).find((k:any) => k.id === idA)).toMatchObject({canReveal:false,upstreamId: upstreamA});
     const unavailable = await admin(`/keys/${idA}/reveal`, 'POST');
     expect(unavailable.status).toBe(409); expect((await unavailable.json() as any).error.code).toBe('KEY_NOT_RECOVERABLE');
+    expect(await db.prepare('SELECT version, config_json FROM config WHERE id=1').first()).toEqual(beforeRead);
     await value(await admin('/active-upstream','PUT',{id:upstreamB}));
     expect((await value(await proxy('/echo',keyA))).url).toBe('https://a.example/gateway/echo');
-    await value(await admin(`/keys/${idA}`,'PATCH',{upstreamIds:null}));
+    const normalized = await db.prepare('SELECT config_json FROM config WHERE id=1').first<{config_json:string}>();
+    for (const removed of ['upstreamIds', 'failoverEnabled', 'healthRevision', 'faultUntil', 'faultReason']) {
+      expect(normalized!.config_json).not.toContain(removed);
+    }
+    await value(await admin(`/keys/${idA}`,'PATCH',{upstreamId:null}));
   });
   it('unbound keys follow the default; revocation updates this isolate without affecting other keys', async () => {
     for (const token of [keyA, keyB]) {
@@ -407,43 +371,8 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     try { expect((await proxy('/cached', keyB)).status).toBe(200); }
     finally { await db.prepare('ALTER TABLE config_offline RENAME TO config').run(); }
   });
-  it('persists faults and lets only same-origin admins clear them, including already clear states', async () => {
-    const ordered = await value(await admin('/keys', 'POST', {name:'Recovery', upstreamIds:[upstreamB, upstreamA]}));
-    const path = `/upstreams/${upstreamB}/clear-fault`;
-    expect((await admin(path, 'POST', undefined, false)).status).toBe(401);
-    expect((await mf.dispatchFetch(origin + '/_relay/api' + path, {
-      method: 'POST', headers: {Cookie: cookie, Origin: 'https://evil.example'}
-    })).status).toBe(403);
-    expect((await admin(path)).status).toBe(404);
-    expect((await admin('/upstreams/missing/clear-fault', 'POST')).status).toBe(404);
-    const failed = await proxy('/echo?fail=b.example', ordered.key);
-    expect(failed.status).toBe(503); expect(await failed.text()).toBe('failed at b.example');
-    const findB = async () => (await value(await admin('/upstreams'))).find((u:any) => u.id === upstreamB);
-    await expect.poll(async () => (await findB()).faultUntil).toBeGreaterThan(Date.now());
-    const marked = await findB();
-    expect(marked.faultUntil - Date.now()).toBeGreaterThan(1_798_000);
-    expect(marked.faultReason).toBe('HTTP 503');
-    expect((await value(await proxy('/echo', ordered.key))).url).toBe('https://a.example/gateway/echo');
-    // The default route bypasses shared faults without clearing or extending them.
-    expect((await value(await proxy('/echo', keyB))).url).toBe('https://b.example/echo');
-    expect(await (await proxy('/echo?fail=b.example', keyB)).text()).toBe('failed at b.example');
-    expect(await findB()).toEqual(marked);
-    expect(await value(await admin(`/keys/${ordered.id}`, 'PATCH', {failoverEnabled:false})))
-      .toMatchObject({upstreamIds:[upstreamB, upstreamA], failoverEnabled:false});
-    expect((await value(await proxy('/echo', ordered.key))).url).toBe('https://b.example/echo');
-    expect(await (await proxy('/echo?fail=b.example', ordered.key)).text()).toBe('failed at b.example');
-    expect(await findB()).toEqual(marked);
-    await value(await admin(`/keys/${ordered.id}`, 'PATCH', {failoverEnabled:true}));
-    expect((await value(await proxy('/echo', ordered.key))).url).toBe('https://a.example/gateway/echo');
-    const cleared = await value(await admin(path, 'POST'));
-    expect(cleared).toMatchObject({healthRevision: marked.healthRevision + 1, faultUntil: 0, faultReason: null});
-    expect((await value(await proxy('/echo', ordered.key))).url).toBe('https://b.example/echo');
-    const before = await value(await admin('/config'));
-    expect((await value(await admin(path, 'POST'))).healthRevision).toBe(cleared.healthRevision + 1);
-    expect((await value(await admin('/config'))).version).toBe(before.version + 1);
-    await value(await admin(`/keys/${ordered.id}`, 'DELETE'));
-  });
-  it('persists catalog overrides and routes through the Worker with selected credentials and isolated faults', async () => {
+
+  it('persists catalog overrides and uses only the selected upstream and credentials', async () => {
     const path = '/backend-api/codex/models';
     const a = await value(await admin('/upstreams', 'POST', {
       name: 'Catalog A', baseUrl: 'https://chat-a.example/v1', authType: 'bearer', key: 'catalog-secret-A',
@@ -452,7 +381,7 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
     const b = await value(await admin('/upstreams', 'POST', {
       name: 'Catalog B', baseUrl: 'https://chat-b.example/gateway/v1/', authType: 'x-api-key', key: 'catalog-secret-B'
     }));
-    const key = await value(await admin('/keys', 'POST', { name: 'Catalog', upstreamIds: [a.id, b.id], failoverEnabled: true }));
+    const key = await value(await admin('/keys', 'POST', { name: 'Catalog', upstreamId: a.id }));
     try {
       const echo = await value(await proxy(`${path}?client_version=client&x=1&x=2&q=a%20b`, key.key));
       expect(echo.url).toBe('https://catalog-a.example/custom/list?client_version=fixed&tag=a&tag=b&x=1&x=2&q=a%20b');
@@ -467,7 +396,8 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
       await value(await admin(`/upstreams/${a.id}`, 'PATCH', { modelCatalogUrl: 'https://catalog-a.example/new/list' }));
       expect((await value(await proxy(path, key.key))).url).toBe('https://catalog-a.example/new/list');
       expect((await proxy('/v1/responses?fail=chat-a.example', key.key)).status).toBe(503);
-      await waitForFault(a.id);
+      expect((await value(await proxy(path, key.key))).url).toBe('https://catalog-a.example/new/list');
+      await value(await admin(`/keys/${key.id}`, 'PATCH', { upstreamId: b.id }));
       const backup = await value(await proxy(path, key.key));
       expect(backup.url).toBe('https://chat-b.example/gateway/v1/backend-api/codex/models');
       expect(backup.headers['x-api-key']).toBe('catalog-secret-B'); expect(backup.headers.authorization).toBeUndefined();
@@ -478,6 +408,18 @@ describe.sequential('real Workers runtime: admin and opaque reverse proxy', () =
       await value(await admin(`/upstreams/${a.id}`, 'DELETE'));
       await value(await admin(`/upstreams/${b.id}`, 'DELETE'));
     }
+  });
+  it('enforces the real login limiter without blocking existing sessions or forwarding', async () => {
+    const login = (ip: string) => mf.dispatchFetch(`${origin}/_relay/api/session`, {
+      method: 'POST', headers: { Origin: origin, 'CF-Connecting-IP': ip, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'wrong' })
+    });
+    for (let i = 0; i < 5; i++) expect((await login('198.51.100.91')).status).toBe(401);
+    const blocked = await login('198.51.100.91');
+    expect(blocked.status).toBe(429); expect(blocked.headers.get('Retry-After')).toBe('60');
+    expect((await login('198.51.100.92')).status).toBe(401);
+    expect((await admin('/config')).status).toBe(200);
+    expect((await proxy('/cached', keyB)).status).toBe(200);
   });
   it('optimistic SQL updates reject old versions and logout clears the cookie', async () => {
     const db = await mf.getD1Database('DB', 'relay');

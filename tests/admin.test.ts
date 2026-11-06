@@ -15,7 +15,7 @@ function fixture(): Config {
     upstreams: ['a', 'b'].map(id => ({ id, name: id, baseUrl: `https://${id}.example/`, authType: 'bearer',
       keyCiphertext: 'private-upstream-ciphertext', keyIv: 'private-iv', keyVersion: 1 })),
     accessKeys: [{ id: 'k', name: 'Key', keyPrefix: 'relay_prefix', keyHash: 'private-hash', createdAt: '2026-10-15',
-      upstreamIds: ['a', 'b'], encryptedKey: { keyCiphertext: 'private-key-ciphertext', keyIv: 'private-iv', keyVersion: 1 } }]
+      upstreamId: 'a', encryptedKey: { keyCiphertext: 'private-key-ciphertext', keyIv: 'private-iv', keyVersion: 1 } }]
   };
 }
 
@@ -48,9 +48,9 @@ describe('management snapshot and write minimization', () => {
     const response = await call('/snapshot');
     expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect(await response.json()).toEqual({
-      config: { proxyUrl: origin, activeUpstreamId: 'a', cacheTtlSeconds: 30, upstreamCooldownSeconds: 1800, version: 7 },
-      upstreams: ['a', 'b'].map(id => ({ id, name: id, baseUrl: `https://${id}.example/`, modelCatalogUrl: '', authType: 'bearer', hasKey: true, healthRevision: 0, faultUntil: 0, faultReason: null })),
-      keys: [{ id: 'k', name: 'Key', keyPrefix: 'relay_prefix', createdAt: '2026-10-15', upstreamIds: ['a', 'b'], enabled: true, failoverEnabled: true, canReveal: true }]
+      config: { proxyUrl: origin, activeUpstreamId: 'a', cacheTtlSeconds: 30, version: 7 },
+      upstreams: ['a', 'b'].map(id => ({ id, name: id, baseUrl: `https://${id}.example/`, modelCatalogUrl: '', authType: 'bearer', hasKey: true })),
+      keys: [{ id: 'k', name: 'Key', keyPrefix: 'relay_prefix', createdAt: '2026-10-15', upstreamId: 'a', enabled: true, canReveal: true }]
     });
     expect(read).toHaveBeenCalledTimes(1);
     expect(write).not.toHaveBeenCalled();
@@ -59,10 +59,10 @@ describe('management snapshot and write minimization', () => {
   it.each([
     ['/upstreams/a', 'PATCH', { modelCatalogUrl: '' }],
     ['/upstreams/a', 'PATCH', { name: 'a', baseUrl: 'https://a.example/', authType: 'bearer', key: '' }],
-    ['/keys/k', 'PATCH', { upstreamIds: ['a', 'b'] }],
+    ['/keys/k', 'PATCH', { upstreamId: 'a' }],
     ['/keys/k', 'PATCH', { name: ' Key ' }],
     ['/keys/k', 'PATCH', { enabled: true }],
-    ['/keys/k', 'PATCH', { name: 'Key', upstreamIds: ['a', 'b'] }],
+    ['/keys/k', 'PATCH', { name: 'Key', upstreamId: 'a' }],
     ['/active-upstream', 'PUT', { id: 'a' }]
   ])('does not write or publish unchanged %s', async (path, method, body) => {
     const { call, env, read, write, row } = setup();
@@ -74,7 +74,7 @@ describe('management snapshot and write minimization', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
-  it('creates, preserves, edits and clears a catalog URL without resetting conversation health', async () => {
+  it('creates, preserves, edits and clears a catalog URL without changing credentials', async () => {
     const { call, env, row, write } = setup();
     const catalog = 'https://catalog.example/catalog.json?version=2&tag=a&tag=b';
     const created = await (await call('/upstreams', 'POST', {
@@ -86,7 +86,6 @@ describe('management snapshot and write minimization', () => {
     expect((await (await call('/snapshot')).json() as any).upstreams.find((u: any) => u.id === created.id).modelCatalogUrl).toBe(catalog);
     const config = JSON.parse(row.config_json);
     const saved = config.upstreams.find((u: any) => u.id === created.id);
-    Object.assign(saved, { healthRevision: 9, faultUntil: Date.now() + 60_000, faultReason: 'HTTP 503' });
     row.config_json = JSON.stringify(config); row.version++;
     await call(`/upstreams/${created.id}`, 'PATCH', { modelCatalogUrl: 'https://other.example/catalog' });
     expect(JSON.parse(row.config_json).upstreams.find((u: any) => u.id === created.id)).toEqual({ ...saved, modelCatalogUrl: 'https://other.example/catalog' });
@@ -108,21 +107,21 @@ describe('management snapshot and write minimization', () => {
     });
 
   it.each([undefined, null, 'a'])('does not rewrite unchanged legacy binding %s', async upstreamId => {
-    const config = fixture(); delete config.accessKeys[0].upstreamIds;
+    const config = fixture(); delete config.accessKeys[0].upstreamId;
     if (upstreamId !== undefined) config.accessKeys[0].upstreamId = upstreamId;
     const { call, write, row } = setup(config);
     const before = row.config_json;
-    const response = await call('/keys/k', 'PATCH', { upstreamIds: upstreamId ? [upstreamId] : null });
-    expect((await response.json() as any).upstreamIds).toEqual(upstreamId ? [upstreamId] : null);
+    const response = await call('/keys/k', 'PATCH', { upstreamId: upstreamId ?? null });
+    expect((await response.json() as any).upstreamId).toBe(upstreamId ?? null);
     expect(write).not.toHaveBeenCalled(); expect(row.config_json).toBe(before);
   });
 
-  it('persists an order change and publishes the committed snapshot without rereading', async () => {
+  it('persists a binding change and publishes the committed snapshot without rereading', async () => {
     const { call, write, read, env, row } = setup();
-    await call('/keys/k', 'PATCH', { upstreamIds: ['b', 'a'] });
+    await call('/keys/k', 'PATCH', { upstreamId: 'b' });
     expect(write).toHaveBeenCalledTimes(1);
     expect(row.version).toBe(8);
-    expect((await getCache(env).get()).config.accessKeys[0].upstreamIds).toEqual(['b', 'a']);
+    expect((await getCache(env).get()).config.accessKeys[0].upstreamId).toBe('b');
     expect(read).toHaveBeenCalledTimes(1);
   });
 
@@ -135,9 +134,9 @@ describe('management snapshot and write minimization', () => {
     expect((await getCache(env).get()).keysByHash.get('private-hash')?.enabled).toBe(false);
     expect(await (await call('/keys')).json()).toMatchObject([{id:'k', enabled:false}, {id:'other', enabled:true}]);
     await call('/keys/k', 'PATCH', {enabled:false}); expect(write).toHaveBeenCalledTimes(1);
-    await call('/keys/k', 'PATCH', {name:'Renamed', upstreamIds:['b','a']});
+    await call('/keys/k', 'PATCH', {name:'Renamed', upstreamId:'b'});
     expect(JSON.parse(row.config_json).accessKeys[0].enabled).toBe(false);
-    expect(await (await call('/keys/k', 'PATCH', {enabled:true})).json()).toMatchObject({enabled:true, name:'Renamed', upstreamIds:['b','a']});
+    expect(await (await call('/keys/k', 'PATCH', {enabled:true})).json()).toMatchObject({enabled:true, name:'Renamed', upstreamId:'b'});
     expect((await getCache(env).get()).keysByHash.get('private-hash')?.enabled).toBe(true);
     expect(JSON.parse(row.config_json).accessKeys[0].encryptedKey).toEqual(config.accessKeys[0].encryptedKey);
   });
@@ -153,33 +152,7 @@ describe('management snapshot and write minimization', () => {
     expect(await (await call('/keys', 'POST', {name:'New key'})).json()).toMatchObject({enabled:true});
   });
 
-  it('toggles failover without changing routes, secrets or shared health and skips unchanged saves', async () => {
-    const config = fixture(); Object.assign(config.upstreams[0], {healthRevision: 3, faultUntil: 9999999999999, faultReason: 'HTTP 503'});
-    const {call, row, write, env} = setup(config);
-    expect(await (await call('/keys/k', 'PATCH', {failoverEnabled:false})).json()).toMatchObject({failoverEnabled:false, upstreamIds:['a','b']});
-    expect(JSON.parse(row.config_json)).toEqual({...config, accessKeys:[{...config.accessKeys[0], failoverEnabled:false}]});
-    expect((await getCache(env).get()).config.accessKeys[0].failoverEnabled).toBe(false);
-    await call('/keys/k', 'PATCH', {failoverEnabled:false}); expect(write).toHaveBeenCalledTimes(1);
-    expect(await (await call('/keys/k', 'PATCH', {failoverEnabled:true})).json()).toMatchObject({failoverEnabled:true});
-    expect(write).toHaveBeenCalledTimes(2);
-    expect(await (await call('/keys/k', 'PATCH', {upstreamIds:['a']})).json()).toMatchObject({failoverEnabled:false});
-    expect(JSON.parse(row.config_json).upstreams).toEqual(config.upstreams);
-  });
 
-  it('validates the flag and requires multiple explicit upstreams before enabling failover', async () => {
-    const {call, write} = setup();
-    for (const failoverEnabled of [null, 'false', 0, [], {}]) {
-      await expect(call('/keys/k', 'PATCH', {failoverEnabled})).rejects.toMatchObject({status:400});
-      await expect(call('/keys', 'POST', {name:'invalid', upstreamIds:['a','b'], failoverEnabled})).rejects.toMatchObject({status:400});
-    }
-    for (const upstreamIds of [null, ['a']]) {
-      await expect(call('/keys/k', 'PATCH', {upstreamIds, failoverEnabled:true})).rejects.toMatchObject({status:400});
-      await expect(call('/keys', 'POST', {name:'invalid', upstreamIds, failoverEnabled:true})).rejects.toMatchObject({status:400});
-    }
-    expect(write).not.toHaveBeenCalled();
-    expect(await (await call('/keys', 'POST', {name:'direct', upstreamIds:['a','b'], failoverEnabled:false})).json())
-      .toMatchObject({upstreamIds:['a','b'], failoverEnabled:false});
-  });
 
   it('treats an explicitly supplied upstream secret as a replacement', async () => {
     const { call, write, row } = setup();
@@ -187,20 +160,8 @@ describe('management snapshot and write minimization', () => {
     expect(write).toHaveBeenCalledTimes(1);
     expect(row.config_json).not.toContain('replacement-secret');
     expect(JSON.parse(row.config_json).upstreams[0].keyCiphertext).not.toBe('private-upstream-ciphertext');
-    expect(JSON.parse(row.config_json).upstreams[0]).toMatchObject({healthRevision: 1, faultUntil: 0, faultReason: null});
   });
 
-  it('preserves health on name and route edits, and fences it on destination or auth edits', async () => {
-    const config = fixture(); Object.assign(config.upstreams[0], {healthRevision: 5, faultUntil: 9999999999999, faultReason: 'HTTP 503'});
-    const {call, row} = setup(config);
-    await call('/upstreams/a', 'PATCH', {name: 'renamed'});
-    await call('/keys/k', 'PATCH', {upstreamIds: ['b','a']});
-    expect(JSON.parse(row.config_json).upstreams[0]).toMatchObject({healthRevision: 5, faultUntil: 9999999999999});
-    await call('/upstreams/a', 'PATCH', {baseUrl: 'https://changed.example/'});
-    expect(JSON.parse(row.config_json).upstreams[0]).toMatchObject({healthRevision: 6, faultUntil: 0, faultReason: null});
-    await call('/upstreams/a', 'PATCH', {authType: 'x-api-key'});
-    expect(JSON.parse(row.config_json).upstreams[0].healthRevision).toBe(7);
-  });
 
   it('compares against fresh D1 state even when the proxy cache already matches the request', async () => {
     const { call, env, row, read, write } = setup();
@@ -215,7 +176,7 @@ describe('management snapshot and write minimization', () => {
   it('retains validation and optimistic conflict handling without publishing failed writes', async () => {
     const { call, env, write } = setup();
     const publish = vi.spyOn(getCache(env), 'publish');
-    await expect(call('/keys/k', 'PATCH', { upstreamIds: ['a', 'a'] })).rejects.toMatchObject({ status: 400 });
+    await expect(call('/keys/k', 'PATCH', { upstreamId: 42 })).rejects.toMatchObject({ status: 400 });
     await expect(call('/active-upstream', 'PUT', { id: 'missing' })).rejects.toMatchObject({ status: 404 });
     expect(write).not.toHaveBeenCalled();
     write.mockResolvedValueOnce({ meta: { changes: 0 } });

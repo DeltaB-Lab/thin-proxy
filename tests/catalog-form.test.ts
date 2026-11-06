@@ -12,7 +12,7 @@ it('submits, reopens and clears the catalog URL in the real management form', as
   let upstream: Record<string, unknown> | undefined;
   const fetchMock = vi.fn(async (path: string, init?: RequestInit) => {
     if (path === '/_relay/api/snapshot') return Response.json({
-      config: { proxyUrl: 'https://relay.example', activeUpstreamId: null, cacheTtlSeconds: 30, upstreamCooldownSeconds: 1800 },
+      config: { proxyUrl: 'https://relay.example', activeUpstreamId: null, cacheTtlSeconds: 30 },
       upstreams: upstream ? [upstream] : [], keys: []
     });
     if (path === '/_relay/api/test-auth') return Response.json({ results: [
@@ -20,7 +20,7 @@ it('submits, reopens and clears the catalog URL in the real management form', as
       { authType: 'x-api-key', status: 200, outcome: 'unknown', message: '无密钥对照未确认鉴权，无法判断', models: [] }
     ] });
     const body = JSON.parse(init!.body as string);
-    upstream = { ...upstream, ...body, id: 'a', faultUntil: 0, faultReason: null };
+    upstream = { ...upstream, ...body, id: 'a' };
     return Response.json(upstream);
   });
   vi.stubGlobal('fetch', fetchMock);

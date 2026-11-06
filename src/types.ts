@@ -2,10 +2,10 @@ export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
   ADMIN_KEY: string;
+  ADMIN_LOGIN_LIMITER: RateLimit;
   UPSTREAM_KEY_ENCRYPTION_KEY: string;
   CONFIG_CACHE_TTL_SECONDS?: string;
   UPSTREAM_TIMEOUT_SECONDS?: string;
-  UPSTREAM_COOLDOWN_SECONDS?: string;
   SELF_HOSTS?: string;
 }
 export type AuthType = 'bearer' | 'x-api-key';
@@ -20,9 +20,6 @@ export interface Upstream extends EncryptedKey {
   baseUrl: string;
   modelCatalogUrl?: string;
   authType: AuthType;
-  healthRevision?: number;
-  faultUntil?: number;
-  faultReason?: string | null;
 }
 export interface AccessKey {
   id: string;
@@ -30,10 +27,7 @@ export interface AccessKey {
   keyHash: string;
   keyPrefix: string;
   createdAt: string;
-  // Read-only compatibility with earlier single-upstream configurations.
   upstreamId?: string | null;
-  upstreamIds?: string[] | null;
-  failoverEnabled?: boolean;
   // Older keys remain enabled until explicitly stopped.
   enabled?: boolean;
   encryptedKey?: EncryptedKey;

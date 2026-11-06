@@ -5,27 +5,38 @@
   "preview_urls": false,
   "main": "src/index.ts",
   "compatibility_date": "2026-08-06",
-  "compatibility_flags": ["enable_request_signal"],
+  "compatibility_flags": [
+    "enable_request_signal"
+  ],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
     "run_worker_first": true
   },
-  "d1_databases": [{
-    "binding": "DB",
-    "database_name": "thin-proxy",
-    "database_id": "00000000-0000-0000-0000-000000000000",
-    "migrations_dir": "migrations"
-  }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "thin-proxy",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
   "vars": {
     "CONFIG_CACHE_TTL_SECONDS": "30",
     "UPSTREAM_TIMEOUT_SECONDS": "300",
-    "UPSTREAM_COOLDOWN_SECONDS": "1800",
     "SELF_HOSTS": ""
   },
   "observability": {
-    "enabled": true,
-    "head_sampling_rate": 1,
-    "logs": { "enabled": true, "invocation_logs": true, "persist": true }
-  }
+    "enabled": false
+  },
+  "ratelimits": [
+    {
+      "name": "ADMIN_LOGIN_LIMITER",
+      "namespace_id": "2026110601",
+      "simple": {
+        "limit": 5,
+        "period": 60
+      }
+    }
+  ]
 }
